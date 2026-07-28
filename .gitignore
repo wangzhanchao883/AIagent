@@ -1,0 +1,23 @@
+﻿# 电子书文件（大文件 + 版权）
+电子书/
+
+# 编译/压缩包
+*.zip
+*.rar
+*.7z
+
+# 编辑器/IDE 配置
+.workbuddy/
+.codebuddy-plugin/
+.vscode/
+.idea/
+
+# 操作系统
+Thumbs.db
+.DS_Store
+Desktop.ini
+
+# 临时文件
+*.tmp
+*.swp
+*~
