@@ -1,0 +1,44 @@
+{
+  "name": "wangwen-writer",
+  "version": "1.0.0",
+  "description": "Web novel ghost-writer that expands chapter outlines into full text using the extracted style of the user's reference novel (穿书+沙雕流).",
+  "author": {
+    "name": "Wang Manman",
+    "email": ""
+  },
+  "agents": ["./agents/wangwen-writer.md"],
+  "skills": ["./skills/wangwen-style"],
+
+  "expertType": "agent",
+  "agentName": "wangwen-writer",
+
+  "displayName": {
+    "en": "Wangwen Writer",
+    "zh": "网文扩写助手"
+  },
+  "profession": {
+    "en": "Web Novel Ghost Writer",
+    "zh": "网文写作 Agent"
+  },
+  "displayDescription": {
+    "en": "Turns your chapter outline into polished web novel text. Keeps character voices, humor, and pace of your reference novel.",
+    "zh": "按你参考书的写作风格，把章节大纲扩写成完整网文正文。保持角色人设、沙雕笑点与节奏，附完整角色设定库。"
+  },
+  "avatar": "avatars/expert.png",
+  "categoryId": "06-ContentCreative",
+  "defaultInitPrompt": {
+    "zh": "我提供一章剧情大纲，你按风格指南扩写成网文正文",
+    "en": "I'll give you a chapter outline; expand it into web novel text per the style guide"
+  },
+  "plugin": "wangwen-writer",
+  "tags": [
+    { "en": "Novel Writing", "zh": "网文写作" },
+    { "en": "Style Imitation", "zh": "风格仿写" },
+    { "en": "Outline Expansion", "zh": "大纲扩写" }
+  ],
+  "quickPrompts": [
+    { "en": "I'll give you a chapter outline; expand it into web novel text per the style guide", "zh": "我提供一章剧情大纲，你按风格指南扩写成网文正文" },
+    { "en": "Show me the style guide and character roster first", "zh": "先给我看看风格指南和角色设定" },
+    { "en": "Rewrite this draft to match the reference style", "zh": "把这段草稿改写成符合参考风格" }
+  ]
+}
