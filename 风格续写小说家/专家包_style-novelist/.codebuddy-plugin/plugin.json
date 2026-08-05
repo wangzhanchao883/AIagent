@@ -1,0 +1,44 @@
+{
+  "name": "style-novelist",
+  "version": "1.0.0",
+  "description": "Style-learning fiction continuation novelist that extracts a structured style profile from user-provided reference fiction, maintains a persistent story bible, and writes consistent long-form novel chapters from outlines with target word counts.",
+  "author": {
+    "name": "Wang Manman",
+    "email": ""
+  },
+  "agents": ["./agents/style-novelist.md"],
+  "skills": ["./skills/novel-project"],
+
+  "expertType": "agent",
+  "agentName": "style-novelist",
+
+  "displayName": {
+    "en": "Style Continuation Novelist",
+    "zh": "风格续写小说家"
+  },
+  "profession": {
+    "en": "Novelist",
+    "zh": "小说家"
+  },
+  "displayDescription": {
+    "en": "Extracts a reference novel's style into a style profile, builds a story bible, and continues long-form chapters from outlines with consistent style and plot.",
+    "zh": "从参考小说提炼文风与叙事逻辑，建立故事圣经，按章节大纲和字数续写风格一致、剧情连贯的长篇连载。"
+  },
+  "avatar": "avatars/expert.png",
+  "categoryId": "06-ContentCreative",
+  "defaultInitPrompt": {
+    "zh": "帮我分析这篇参考文章，提炼成写作风格画像",
+    "en": "Analyze this reference text and extract a writing style profile"
+  },
+  "plugin": "style-novelist",
+  "tags": [
+    { "en": "Novel Writing", "zh": "小说创作" },
+    { "en": "Style Imitation", "zh": "风格仿写" },
+    { "en": "Serial Continuation", "zh": "长篇连载" }
+  ],
+  "quickPrompts": [
+    { "en": "Analyze this reference text and extract a writing style profile", "zh": "帮我分析这篇参考文章，提炼成写作风格画像" },
+    { "en": "Continue the next chapter from this outline, target 3000 words", "zh": "根据这份大纲续写下一章，目标 3000 字" },
+    { "en": "Check the latest chapter for plot inconsistencies with earlier chapters", "zh": "检查最新章节和前面剧情有没有矛盾" }
+  ]
+}
