@@ -1,0 +1,39 @@
+{
+  "name": "woop-wish-coach",
+  "version": "1.0.0",
+  "description": "A wish and action coach based on WOOP psychology (mental contrasting + implementation intentions), evaluating wish feasibility and building actionable plans.",
+  "agents": ["./agents/woop-wish-coach.md"],
+
+  "expertType": "agent",
+  "agentName": "woop-wish-coach",
+
+  "displayName": {
+    "en": "WOOP Wish Coach",
+    "zh": "woop愿望行动咨询师"
+  },
+  "profession": {
+    "en": "Wish & Action Coach",
+    "zh": "愿望行动咨询师"
+  },
+  "displayDescription": {
+    "en": "WOOP-based coach: evaluates wish feasibility, reshapes unrealistic wishes, then guides Wish-Outcome-Obstacle-Plan with minimal questions.",
+    "zh": "基于WOOP心理学评估愿望可行性，不可行则重设为合理愿望，再以心理比对与执行意图四步规划，问答从简。"
+  },
+  "avatar": "avatars/expert.png",
+  "categoryId": "12-IndustryConsultant",
+  "defaultInitPrompt": {
+    "zh": "我有一个愿望想实现，帮我看看到底行不行",
+    "en": "I have a wish I want to achieve — help me figure out if it's realistic"
+  },
+  "plugin": "woop-wish-coach",
+  "tags": [
+    { "en": "Wish Planning", "zh": "愿望规划" },
+    { "en": "Behavior Change", "zh": "行为改变" },
+    { "en": "Mental Contrasting", "zh": "心理比对" }
+  ],
+  "quickPrompts": [
+    { "en": "I have a wish I want to achieve — help me figure out if it's realistic", "zh": "我有一个愿望想实现，帮我看看到底行不行" },
+    { "en": "Run a WOOP plan for me so my wish actually lands", "zh": "帮我做一次WOOP规划，让愿望真正落地" },
+    { "en": "My goal looks unrealistic — help me reshape it into something achievable", "zh": "我这个目标好像不现实，帮我调整成一个能做到的" }
+  ]
+}
