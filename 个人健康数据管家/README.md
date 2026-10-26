@@ -28,11 +28,13 @@
 
 按你的 AI 助手下载对应那一个：
 
-| 你的 AI 助手 | 下载这个文件 |
-|---|---|
-| 豆包（桌面版 / 工作版） | `health-data-steward-doubao.zip` |
-| WorkBuddy | `health-data-steward-workbuddy.zip` |
-| 其他支持 Skill 的助手（Claude Code、Codex、Cursor 等） | `health-data-steward-doubao.zip` |
+| 你的 AI 助手 | 下载这个文件 | 直链 |
+|---|---|---|
+| 豆包（桌面版 / 工作版） | `health-data-steward-doubao.zip` | [下载](https://github.com/wangzhanchao883/AIagent/releases/latest/download/health-data-steward-doubao.zip) |
+| WorkBuddy | `health-data-steward-workbuddy.zip` | [下载](https://github.com/wangzhanchao883/AIagent/releases/latest/download/health-data-steward-workbuddy.zip) |
+| 其他支持 Skill 的助手（Claude Code、Codex、Cursor 等） | `health-data-steward-doubao.zip` | [下载](https://github.com/wangzhanchao883/AIagent/releases/latest/download/health-data-steward-doubao.zip) |
+
+> 直链的文件名不带版本号，所以永远指向最新版——分享给别人时可以直接发这两个链接。
 
 > 不用 clone 整个仓库——这里还放着别的专家，体积不小。单个包走 Release 就够。
 > 两个包**核心完全一样**（逐字节相同的 `SKILL.md` 与脚本），差别只是 WorkBuddy 包多一层专家包外壳（`plugin.json` + 人设 + 头像）。
@@ -173,3 +175,12 @@ zip 文件名**故意不带版本号**：GitHub 的 `releases/latest/download/<�
 | 1.3.0 | WorkBuddy 专家包（单一宿主） |
 
 每个版本的安装包都在 [Releases](https://github.com/wangzhanchao883/AIagent/releases) 里留档，可以回退到任意历史版本。
+
+---
+
+## 十、第三方依赖与致谢
+
+- **小米云端取数**：可选能力，依赖开源项目 [mi-fitness-mcp-cn](https://github.com/HUAYUE1024/mi-fitness-mcp-cn)。本项目**不内嵌**它的源码，而是在你执行 `install_band_mcp.py` 时从上游 `git clone` 到你的数据目录，遵循该项目自身的许可证。感谢作者 HUAYUE1024。
+- **PyYAML**：脚本唯一的第三方 Python 依赖，`bootstrap.py` 会自动装入项目内 `.venv`，不污染系统环境。
+
+本项目其余代码仅使用 Python 标准库。
