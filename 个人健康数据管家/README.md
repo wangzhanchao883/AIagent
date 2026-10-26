@@ -147,6 +147,14 @@ gh release create health-data-steward-v1.4.1 \
 
 zip 文件名**故意不带版本号**：GitHub 的 `releases/latest/download/<文件名>` 直链要求文件名不变，才能永久指向最新版，README 里的下载链接就永远不用改。
 
+**发版后必须自查三件事**（漏一件就等于没发好）：
+
+1. 打开 Release 页面，**下方必须有一个 Assets 区块**，里面是两个 zip，能看到文件大小
+2. 如果两个 zip 出现在上面的说明文字里、Assets 区是空的 —— **说明拖错了位置**（拖进了描述框）。点 Edit，把它们拖到下方「Attach binaries by dropping them here」区域，再 Update
+3. 点一下 README 里的直链，确认能下载且大小对得上（豆包约 125 KB，WorkBuddy 约 375 KB）
+
+> 为什么这条要写死：GitHub 允许把文件拖进 Release 的**说明框**，那样会变成正文里的 `user-attachments` 链接——文件确实能下载，但**不会**进 Assets，`releases/latest/download/` 直链照样 404。两种位置在编辑界面上只差几十像素，很容易拖错。
+
 ---
 
 ## 八、数据安全提醒
