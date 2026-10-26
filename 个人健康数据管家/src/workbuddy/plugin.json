@@ -1,0 +1,68 @@
+{
+  "name": "health-data-steward",
+  "version": "1.4.0",
+  "description": "Personal health data steward. Turns body-weight scale photos, meal photos and dictation into structured rows in a local SQLite database, then produces a daily HTML report with trend review and next-day lifestyle advice. Photos are used only to extract numbers and are not archived. Runs entirely on the local machine.",
+  "author": {
+    "name": "wangzhanchao",
+    "email": "wangzhanchao883@users.noreply.github.com"
+  },
+  "agents": [
+    "./agents/health-data-steward.md"
+  ],
+  "skills": [
+    "./skills/health-data-steward"
+  ],
+  "expertType": "agent",
+  "agentName": "health-data-steward",
+  "displayName": {
+    "en": "Health Data Steward",
+    "zh": "健康数据管家"
+  },
+  "profession": {
+    "en": "Personal Health Data Steward",
+    "zh": "个人健康数据管家"
+  },
+  "displayDescription": {
+    "en": "Turns your scale and meal photos into structured rows in a local database, then reports daily activity, sleep, weight and nutrition trends with next-day advice.",
+    "zh": "把你的体重秤与餐食照片取数入库，按日汇总活动、睡眠、体重趋势，给出次日饮食与运动建议。数据全在本机。同一套技能也可直接装到豆包等支持 Skill 的 AI 助手上。"
+  },
+  "avatar": "avatars/expert.png",
+  "categoryId": "04-DataAI",
+  "defaultInitPrompt": {
+    "zh": "你好，介绍下你该怎么用",
+    "en": "Hi, explain how I'm supposed to use you"
+  },
+  "plugin": "health-data-steward",
+  "tags": [
+    {
+      "en": "Health Data Logging",
+      "zh": "健康数据录入"
+    },
+    {
+      "en": "Nutrition Estimation",
+      "zh": "饮食营养估算"
+    },
+    {
+      "en": "Trend Review",
+      "zh": "趋势复盘建议"
+    },
+    {
+      "en": "Cross-Host Skill",
+      "zh": "通用技能"
+    }
+  ],
+  "quickPrompts": [
+    {
+      "zh": "你好，介绍下你该怎么用",
+      "en": "Hi, explain how I'm supposed to use you"
+    },
+    {
+      "zh": "这是我的体重秤照片，帮我记一下",
+      "en": "Here's my scale photo, log it for me"
+    },
+    {
+      "zh": "午饭吃了食堂的青椒炒肉和一碗米饭，记一下",
+      "en": "Lunch was canteen pepper pork and a bowl of rice, log it"
+    }
+  ]
+}
