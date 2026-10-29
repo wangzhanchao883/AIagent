@@ -68,7 +68,6 @@ def _resolve_health_root() -> Path:
         return Path(_env).expanduser().resolve()
     return (Path.home() / "health-data").resolve()
 
-
 ROOT = _resolve_health_root()
 DB = ROOT / "data" / "health.db"
 RAW_DIR = ROOT / "data" / "raw" / "mi_fitness"
@@ -78,8 +77,6 @@ VENDOR = ROOT / "vendor" / "mi-fitness-mcp-cn"
 MCP_EXE = VENDOR / ".venv" / "Scripts" / "mi-fitness-mcp.exe"
 MCP_EXE_POSIX = VENDOR / ".venv" / "bin" / "mi-fitness-mcp"
 
-# [market] 按当前用户家目录推导（Windows 默认位置）；macOS / Linux 请在 config 的
-# sources.band.source_db 里填 `mi-fitness-mcp doctor` 显示的真实路径
 DEFAULT_SRC_DB = (
     Path.home() / "AppData" / "Local" / "mi-fitness-mcp" / "mi-fitness-mcp" / "mi_fitness.db"
 )
@@ -282,7 +279,15 @@ def _stage_minutes(stages_raw) -> dict[str, int]:
 
 
 def write_sleep(con, rows: list[dict], start: str, end: str, stamp: str):
-    n_add = n_upd = 0
+    """睡眠入库。2026-10-24 修「同日夜间 + 午睡互相覆盖」bug（10-20 / 10-23 两次实锤）：
+
+    · 源库 is_nap 不可信（实测全 0），判不出午睡 → 改用启发式：
+      同一归属日若有多条会话（夜间主睡眠 + 午睡），只入库
+      duration_minutes 最长的一条作为主睡眠，其余丢弃。
+    · 已有记录时**整行替换**，不再 COALESCE 混搭——旧的混搭会出现
+      total=45 而 light=387 的行内自相矛盾。
+    """
+    best: dict[str, tuple] = {}   # 归属日 -> (duration, 源记录)
     for r in rows:
         start_ts = to_iso(r.get("start_at"))
         end_ts = to_iso(r.get("end_at"))
@@ -293,6 +298,14 @@ def write_sleep(con, rows: list[dict], start: str, end: str, stamp: str):
         d = (end_ts or start_ts)[:10]
         if not in_range(d, start, end):
             continue
+        dur = int(r["duration_minutes"]) if r.get("duration_minutes") is not None else 0
+        cur = best.get(d)
+        if cur is None or dur > cur[0]:
+            best[d] = (dur, r)
+    n_add = n_upd = 0
+    for d, (dur, r) in best.items():
+        start_ts = to_iso(r.get("start_at"))
+        end_ts = to_iso(r.get("end_at"))
         st = _stage_minutes(r.get("stages"))
         existed = _exists(con, "sleep_session", "date = ?", (d,))
         con.execute(
@@ -303,19 +316,19 @@ def write_sleep(con, rows: list[dict], start: str, end: str, stamp: str):
                ON CONFLICT(date) DO UPDATE SET
                  start_ts   = excluded.start_ts,
                  end_ts     = excluded.end_ts,
-                 total_min  = COALESCE(excluded.total_min, sleep_session.total_min),
-                 deep_min   = COALESCE(excluded.deep_min, sleep_session.deep_min),
-                 light_min  = COALESCE(excluded.light_min, sleep_session.light_min),
-                 rem_min    = COALESCE(excluded.rem_min, sleep_session.rem_min),
-                 awake_min  = COALESCE(excluded.awake_min, sleep_session.awake_min),
-                 score      = COALESCE(excluded.score, sleep_session.score),
+                 total_min  = excluded.total_min,
+                 deep_min   = excluded.deep_min,
+                 light_min  = excluded.light_min,
+                 rem_min    = excluded.rem_min,
+                 awake_min  = excluded.awake_min,
+                 score      = excluded.score,
                  source     = excluded.source,
                  fetched_at = excluded.fetched_at""",
             (
                 d,
                 start_ts,
                 end_ts,
-                int(r["duration_minutes"]) if r.get("duration_minutes") is not None else None,
+                dur,
                 st["deep"] or None,
                 st["light"] or None,
                 st["rem"] or None,

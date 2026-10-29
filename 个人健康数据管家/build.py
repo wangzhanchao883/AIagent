@@ -157,7 +157,7 @@ def build(ver: str, want_zip: bool) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="构建健康数据管家双宿主产物与发布包")
-    ap.add_argument("--ver", default="1.4.0", help="版本号，写进 plugin.json 与目录名（默认 1.4.0）")
+    ap.add_argument("--ver", default="1.5.0", help="版本号，写进 plugin.json 与目录名（默认 1.5.0）")
     ap.add_argument("--no-zip", action="store_true", help="只构建目录，不生成 zip")
     a = ap.parse_args()
     check_src()

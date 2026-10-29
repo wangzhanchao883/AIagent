@@ -85,7 +85,6 @@ def _resolve_health_root() -> Path:
         return Path(_env).expanduser().resolve()
     return (Path.home() / "health-data").resolve()
 
-
 ROOT = _resolve_health_root()
 DB_PATH = ROOT / "data" / "health.db"
 CFG_PATH = ROOT / "config" / "config.yaml"
@@ -356,7 +355,12 @@ def sleep_chart(rows):
     W, H = 840, 190
     L, R, T, B = 52, 18, 24, 34
     iw, ih = W - L - R, H - T - B
-    cap = max((r["total_min"] or 0) + (r["awake_min"] or 0) for r in rows)
+    # 2026-10-26 修：上界用「分期之和」与「卧床时长」的较大值。
+    # 原写法 total+awake 在 awake 已经含在 total 里时会重复计（10-25 夜会顶到 16.8h），
+    # 把所有柱子压扁。
+    cap = max(max((r.get("deep_min") or 0) + (r.get("light_min") or 0)
+                  + (r.get("rem_min") or 0) + (r.get("awake_min") or 0),
+                  (r["total_min"] or 0)) for r in rows)
     cap = max(cap, 480)
     n = len(rows)
     bw = min(52, iw / n * 0.55)
@@ -380,7 +384,8 @@ def sleep_chart(rows):
             rx = ' rx="2"' if key == "deep_min" else ""
             bars.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{bw:.1f}" height="{h:.1f}" fill="{col}"{rx}/>')
         labels.append(f'<text x="{cx:.1f}" y="{H-12}" text-anchor="middle" font-size="11" fill="#9a9a94">{r["date"][5:]}</text>')
-        tot = r["total_min"] or 0
+        # 柱高 = 卧床（含顶部灰色清醒段）；标注写实睡 = 卧床 − 清醒
+        tot = max((r["total_min"] or 0) - (r["awake_min"] or 0), 0)
         bars.append(f'<text x="{cx:.1f}" y="{y-6:.1f}" text-anchor="middle" font-size="11" fill="#6f6f6a">{tot//60}h{tot%60:02d}</text>')
 
     grid = []
@@ -494,8 +499,6 @@ def eval_check(check, ctx):
         return ("done" if v >= val else "miss", f"{v:g} 拳")
 
     if metric == "eating_window":
-        if not (ctx["cfg"].get("eating_window") or {}).get("enabled"):
-            return ("na", "未开启")
         f_, l_ = ctx.get("first_meal"), ctx.get("last_meal")
         if not f_ or not l_:
             return ("na", "无数据")
@@ -649,20 +652,53 @@ def build_advice(ctx) -> list:
     rhr, base = ctx["rhr"], ctx["rhr_base"]
     overreached = (rhr is not None and base is not None and rhr - base >= 5)
 
+    # 2026-10-25 加：昨夜睡眠严重不足（<5h）时，运动建议整体降级 ——
+    # 缺觉时练得越狠恢复越差，减重期更不能靠「多练」补「没睡」。
+    _sl_chk = None if ctx.get("no_sleep") else ctx.get("sleep")
+    _sleep_short = bool(_sl_chk and _sl_chk.get("total_min")
+                        and _sl_chk["total_min"] < 300)
+
     if overreached:
         a.append({"cat": "运动",
                   "text": f"今晨静息心率 {rhr} bpm，比近 30 天均值高 {rhr - base} bpm。"
                           f"今日降低运动强度（改成快走 / 散步即可），优先保证睡眠与水分。",
                   "check": None})
+    elif _sleep_short:
+        _sm = _sl_chk["total_min"]
+        a.append({"cat": "运动",
+                  "text": f"昨夜只睡 {_sm//60} 小时 {_sm%60} 分（严重不足），"
+                          f"昨日运动虽已达标，今日仍建议<b>只做低强度</b>：散步 20–30 分钟即可，"
+                          f"不做高强度、不加量——先补觉。缺觉时练得越狠，恢复越差。",
+                  "check": None})
     elif steps is not None and steps < tgt_steps * 0.8:
-        a.append({"cat": "运动",
-                  "text": f"昨日 {steps:,} 步，未达 {tgt_steps:,} 步目标。今日晚饭后补 20 分钟步行。",
-                  "check": {"metric": "steps", "value": tgt_steps}})
+        # 2026-10-26 加：休息日步数低属正常，不催「补走」——判定锚定星期几，不锚定步数
+        _wp = cfg.get("workout_plan") or {}
+        _rest = set(_wp.get("rest_weekdays") or [])
+        _is_rest = bool(_rest) and date.fromisoformat(ctx["day"]).isoweekday() in _rest
+        if _is_rest:
+            a.append({"cat": "运动",
+                      "text": f"昨日为休息恢复日，{steps:,} 步属正常范围，<b>不必补走</b>"
+                              f"（散步是恢复手段，不计中高强度考核、也不算断档）。今日按计划训练即可。",
+                      "check": {"metric": "steps", "value": tgt_steps}})
+        else:
+            a.append({"cat": "运动",
+                      "text": f"昨日 {steps:,} 步，未达 {tgt_steps:,} 步目标。今日晚饭后补 20 分钟步行。",
+                      "check": {"metric": "steps", "value": tgt_steps}})
     elif wmin < tgt_act:
-        a.append({"cat": "运动",
-                  "text": f"昨日中高强度运动 {wmin:g} 分，不足 {tgt_act} 分。"
-                          f"今日安排一次 {tgt_act} 分钟以上中强度运动（快走 / 踏步 / 单车均可）。",
-                  "check": {"metric": "workout_min", "value": tgt_act}})
+        # 2026-10-28 修：休息日 0 分钟中高强度属计划内，不能催「今日补一次」
+        _wp2 = cfg.get("workout_plan") or {}
+        _rest2 = set(_wp2.get("rest_weekdays") or [])
+        _is_rest2 = bool(_rest2) and date.fromisoformat(ctx["day"]).isoweekday() in _rest2
+        if _is_rest2:
+            a.append({"cat": "运动",
+                      "text": f"昨日为休息恢复日，无中高强度运动属计划内（散步是恢复手段），"
+                              f"<b>不算断档</b>。今日按计划练 {tgt_act} 分钟即可。",
+                      "check": None})
+        else:
+            a.append({"cat": "运动",
+                      "text": f"昨日中高强度运动 {wmin:g} 分，不足 {tgt_act} 分。"
+                              f"今日安排一次 {tgt_act} 分钟以上中强度运动（快走 / 踏步 / 单车均可）。",
+                      "check": {"metric": "workout_min", "value": tgt_act}})
     else:
         a.append({"cat": "运动",
                   "text": f"昨日 {steps:,} 步 + 中高强度运动 {wmin:g} 分，{tgt_steps:,} 步与 {tgt_act} 分双双达标。"
@@ -700,9 +736,31 @@ def build_advice(ctx) -> list:
     if diet_hits and not any(x["cat"] == "饮食" for x in a):
         conf_tip = ("今日午餐拍摄建议改拍「整桌平铺全景」——能把摄入区间收窄，缺口才判得准。"
                     if nut.get("kcal_low") is not None and (nut["kcal_high"] - nut["kcal_low"]) > 400 else "")
+        # 2026-10-26 加：钙不在 diet_hits 里，原句「三项均达标」会让人误以为全项达标
+        ca_t = (cfg.get("goals", {}) or {}).get("calcium_mg", 800)
+        ca_l = nut.get("calcium_low")
+        ca_h = nut.get("calcium_high") or ca_l
+        ca_tip = ""
+        if ca_l is not None and ca_l < ca_t:
+            if ca_h is not None and ca_h >= ca_t:
+                ca_tip = (f"钙 {ca_l:.0f}–{ca_h:.0f} mg 是唯一短板——下界距 {ca_t:g} mg 还差 "
+                          f"{ca_t - ca_l:.0f} mg、上界已够，今日补一杯脱脂奶 200 ml（约 210 mg）即可。")
+            else:
+                ca_tip = (f"钙 {ca_l:.0f}–{ca_h:.0f} mg 上下界均低于 {ca_t:g} mg——"
+                          f"今日补一杯脱脂奶 200 ml + 一拳深绿叶菜（西兰花 / 芥蓝）。")
+        # 2026-10-26 加：原句硬编码「晚餐走奶昔 + 蛋 + 少量剩菜」是作者旧习惯，
+        # 与实际结构无关，已改成按当日碳水水平给（10-25 晚餐实为牛奶+蔬菜+炒肉，完全对不上）。
+        _carb = nut.get("carb_level")
+        if _carb == "high":
+            _keep = "今日把主食减半、优先留到午餐，蔬菜与一拳蛋白别减。"
+        elif _carb in ("low", "mid"):
+            _keep = ("今日保持「蔬菜 4 拳 + 一拳蛋白」的结构，主食别再减——"
+                     "昨日碳水已偏低，再减会先掉肌肉。")
+        else:
+            _keep = "今日保持昨日同样的蔬菜与蛋白量，主食按饱腹感正常安排。"
         a.append({"cat": "饮食",
-                  "text": f"饮食结构三项（{'、'.join(diet_hits)}）均达标，"
-                          f"今日保持同样结构：主食留午餐、晚餐走「奶昔 + 蛋 + 少量剩菜」，不额外加油。" + conf_tip,
+                  "text": f"饮食结构三项（{'、'.join(diet_hits)}）均达标，昨日进食也完全落在 12:00–20:00 窗口内。"
+                          + ca_tip + _keep + conf_tip,
                   "check": {"metric": "eating_window", "value": 1}})
 
     # ── 睡眠 ──
@@ -719,17 +777,50 @@ def build_advice(ctx) -> list:
                               "今晚正常佩戴入睡——减重期睡眠债会直接抬升饥饿感，这一项不能长期缺。",
                       "check": {"metric": "sleep_min", "value": tgt_sleep}})
         else:
-            if sl["total_min"] < tgt_sleep - 30:
+            if sleep_fragment(sl, cfg):
                 a.append({"cat": "睡眠",
-                          "text": f"昨晚睡了 {sl['total_min']//60} 小时 {sl['total_min']%60} 分，比目标少 "
-                                  f"{tgt_sleep - sl['total_min']} 分钟。今晚提前 30 分钟上床——"
-                                  f"先把入睡时间稳住，比补时长更有效。",
+                          "text": f"昨夜只记录到 {sl['start_ts'][11:16]}–{sl['end_ts'][11:16]} 这一段"
+                                  f"（{sl['total_min']//60} 小时 {sl['total_min']%60} 分），"
+                                  f"此前没有夜间睡眠记录 → 整夜时长不可判，本条不作「睡眠不足」结论。"
+                                  f"今晚确认佩戴到位，明早先看是否补上完整夜间段。",
+                          "check": {"metric": "sleep_min", "value": tgt_sleep}})
+            elif sl["total_min"] < tgt_sleep - 30:
+                # 2026-10-25 加：按缺口分档 —— 通宵/严重不足时「提前 30 分钟」剂量不够
+                _shr = tgt_sleep - sl["total_min"]
+                if _shr >= 120:
+                    _adv_txt = (f"昨晚入睡 {sl['start_ts'][11:16]}、只睡了 "
+                                f"{sl['total_min']//60} 小时 {sl['total_min']%60} 分，"
+                                f"比目标少 {_shr} 分钟——属严重不足。今晚提前 60–90 分钟上床，"
+                                f"白天补 20–30 分钟午睡（不晚于 15:00），今天不做高强度运动。")
+                else:
+                    _adv_txt = (f"昨晚睡了 {sl['total_min']//60} 小时 {sl['total_min']%60} 分，比目标少 "
+                                f"{_shr} 分钟。今晚提前 30 分钟上床——"
+                                f"先把入睡时间稳住，比补时长更有效。")
+                a.append({"cat": "睡眠", "text": _adv_txt,
                           "check": {"metric": "sleep_min", "value": tgt_sleep}})
             else:
-                a.append({"cat": "睡眠",
-                          "text": f"昨晚睡眠 {sl['total_min']//60} 小时 {sl['total_min']%60} 分，达到目标。"
-                                  f"今晚维持同一入睡时间与时长即可。",
+                # 2026-10-29 修：时长达标但入睡偏晚时，不能再说「维持同一入睡时间」——
+                # 10-28 入睡 01:04（前夜 23:40），原文案等于让人继续 01:04 睡。
+                # 阈值定在「跨过零点」：23:40 这类只差 10 分钟的不报，避免制造噪声。
+                _st = (sl.get("start_ts") or "")[11:16]
+                _late = len(_st) == 5 and _st[:2].isdigit() and int(_st[:2]) < 12
+                _txt = (f"昨晚睡眠 {sl['total_min']//60} 小时 {sl['total_min']%60} 分，达到目标。"
+                        + (f"但入睡 <b>{_st}</b> 已跨零点，时长是靠起得晚补回来的——"
+                           f"今晚提前 <b>30–60 分钟</b>上床，把入睡点挪回 23:30 前。"
+                           if _late else "今晚维持同一入睡时间与时长即可。"))
+                a.append({"cat": "睡眠", "text": _txt,
                           "check": {"metric": "sleep_min", "value": tgt_sleep}})
+            if sl.get("awaken_min") and sl["awaken_min"] >= 120:
+                # 2026-10-26 加：卧床够长但清醒超过 2 小时 → 问题在"碎"不在"短"，
+                # 别给"早睡"这类药不对症的建议。
+                a.append({"cat": "睡眠",
+                          "text": f"昨夜卧床 {sl['inbed_min']//60} 小时 {sl['inbed_min']%60} 分，"
+                                  f"但其中清醒 <b>{sl['awaken_min']} 分</b>（超过 2 小时）——"
+                                  f"睡着约 {sl['total_min']//60} 小时 {sl['total_min']%60} 分。"
+                                  f"主问题不是上床晚，是睡眠太碎：今晚把咖啡因截止到 14:00 前、"
+                                  f"睡前 1 小时远离屏幕、卧室温度调到 20–22℃；"
+                                  f"若连续一周夜间清醒都超过 1 小时，建议找医生看看。",
+                          "check": None})
             if sl.get("wake_count") and sl["wake_count"] >= 3:
                 a.append({"cat": "睡眠",
                           "text": f"昨夜醒了 {sl['wake_count']} 次。睡前 2 小时避开咖啡因与酒精，观察一周。",
@@ -781,6 +872,35 @@ def gap_word(gap, lo_s, hi_s):
     return "达标", "ok"
 
 
+def sleep_fragment(sl, cfg=None) -> bool:
+    """这条睡眠是否「疑似只有片段」（数据不完整，不能当整夜判）。
+
+    2026-10-25 加。实例：10-25 云端只返回 06:22→08:45 一段 143 分，
+    源库里此前没有任何夜间段。若直接当整夜，会把「数据缺失」渲染成
+    「只睡了 2 小时」，进而给出「今晚提前 30 分钟上床」这类错误建议。
+
+    判据（保守，只抓明显异常）：起点钟点落在 04:00–12:00 —— 正常入睡应在前一夜；
+    且总时长 < 5.5 小时。两条同时成立才判片段，避免误伤「晚睡但睡够」的日子。
+
+    ⚠ 例外（2026-10-25 加）：config `sleep_confirmed_short` 里登记过的日期，
+    表示用户已确认那天是**真短睡**（熬夜 / 通宵），此时不做片段判定 ——
+    **口述优先于算法推断**。否则「真熬夜」会被反判成「数据缺失」。
+    """
+    if not sl or not sl.get("start_ts") or not sl.get("total_min"):
+        return False
+    d = sl.get("date")
+    for it in (cfg or {}).get("sleep_confirmed_short") or []:
+        key = it.get("date") if isinstance(it, dict) else it
+        if key and str(key) == str(d):
+            return False          # 已人工确认 = 真实短睡，按真实数据判
+    try:
+        hhmm = sl["start_ts"][11:16]
+        mins = int(hhmm[:2]) * 60 + int(hhmm[3:5])
+    except Exception:
+        return False
+    return (4 * 60 <= mins <= 12 * 60) and sl["total_min"] < 330
+
+
 def trend_word(seq, lo, hi, higher_better=True, tol=None):
     """趋势判定：**方向词只描述方向**，好坏由 higher_better 决定。
 
@@ -829,12 +949,17 @@ def diet_verdict_words(dq_items):
     return words
 
 
-def build_week_ctx(con, day: str, days: int = 7) -> dict:
+def build_week_ctx(con, day: str, days: int = 7, workout_plan: dict | None = None) -> dict:
     """本周（近 N 天）执行情况——「今日建议」要结合长周期趋势，不能只看昨天。
 
     用户要求（2026-10-15）：今日建议根据运动/睡眠/饮食的**长期目标**以及
     **本周整体执行情况**给出，所以这里统计蛋白趋势、运动连续天数、
     步数趋势、饮食记录天数，供建议文案引用。
+
+    2026-10-24 增补：
+      · strength_days —— 窗口内含抗阻类运动的天数（判「零抗阻」结构性短板）
+      · last_workout  —— 报告日 workout 明细（判休息日散步用）
+      · workout_plan  —— config 的周计划（train_weekdays 等），供按星期几判定
     """
     d0 = date.fromisoformat(day)
     start = (d0 - timedelta(days=days - 1)).isoformat()
@@ -873,26 +998,64 @@ def build_week_ctx(con, day: str, days: int = 7) -> dict:
     #   只用 streak 会把「连续 6 天后正常休息 1 天」写成「节奏还没连上」。
     out["workout_days"] = len(wdays)
 
+    # 抗阻判定（2026-10-24 加）：sport 命中以下关键词才算抗阻；
+    # 爬楼机 / 步行 / 踏步机等全为有氧，不算。
+    _STRENGTH_KW = ("strength", "resistance", "weight", "dumbbell", "barbell",
+                    "kettlebell", "band", "pushup", "push_up", "squat", "plank",
+                    "力量", "哑铃", "杠铃", "俯卧撑", "深蹲", "平板支撑")
+    day_sport = [(r["date"], (r["sport"] or "").lower()) for r in con.execute(
+        "SELECT DISTINCT date(start_ts) AS date, sport FROM workout "
+        "WHERE date(start_ts) >= ? AND date(start_ts) <= ?", (start, day))]
+    out["strength_days"] = len({d for d, s in day_sport
+                                if any(k in s for k in _STRENGTH_KW)})
+
+    # 报告日的 workout 明细（判「休息日散步」用）
+    lw = con.execute(
+        "SELECT sport, duration_min, avg_hr, kcal FROM workout "
+        "WHERE date(start_ts) = ? ORDER BY start_ts", (day,)).fetchone()
+    out["last_workout"] = dict(lw) if lw else None
+    out["workout_plan"] = workout_plan or {}
+
     # 睡眠记录天数（D-37 新口径：报告日 D 对应库内 date = D+1，故这里跨到 day+1）
     d1 = (d0 + timedelta(days=1)).isoformat()
     out["sleep_days"] = con.execute(
         "SELECT COUNT(*) FROM sleep_session WHERE date >= ? AND date <= ?",
         (start, d1)).fetchone()[0]
+    # 2026-10-29 修：原来文案把上面这个「30 天窗口记录数」写成「本周 N 天记录」，
+    # 10-28 因此出现「本周 8 天记录」（一周只有 7 天）。单列一个真实的近 7 夜计数。
+    s7 = (d0 - timedelta(days=5)).isoformat()
+    out["sleep_days_7"] = con.execute(
+        "SELECT COUNT(*) FROM sleep_session WHERE date >= ? AND date <= ?",
+        (s7, d1)).fetchone()[0]
     return out
 
 
 def week_trend_phrase(wk: dict, key: str, unit: str, higher_better=True) -> str:
-    """把逐日序列变成一句趋势描述（供建议文案引用）。数据不足时返回空串。"""
+    """把逐日序列变成一句趋势描述（供建议文案引用）。数据不足时返回空串。
+
+    2026-10-24 改：前/后分段**均值 → 中位数**。均值会被单个离群日带反方向
+    （实例：10-20 孤立低值 3618 步把「后 3 天均 10340」的结论带偏，
+    用户定案改中位数，见 docs/04-决策记录.md）。
+    """
     seq = [v for _, v in wk.get(key) or []]
     if len(seq) < 3:
         return ""
-    first3 = sum(seq[:3]) / 3
-    last3 = sum(seq[-3:]) / 3
-    if abs(last3 - first3) < max(1.0, first3 * 0.05):
-        return f"近 {len(seq)} 天基本持平（前 3 天均 {first3:.0f} → 后 3 天均 {last3:.0f} {unit}）"
-    arrow = "上升" if last3 > first3 else "下降"
-    good = (last3 > first3) if higher_better else (last3 < first3)
-    return (f"近 {len(seq)} 天{arrow}（前 3 天均 {first3:.0f} → 后 3 天均 {last3:.0f} {unit}，"
+    half = len(seq) // 2
+
+    def _med(vals):
+        s = sorted(vals)
+        n = len(s)
+        return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+    first_med = _med(seq[:half]) if half else seq[0]
+    last_med = _med(seq[-half:]) if half else seq[-1]
+    if abs(last_med - first_med) < max(1.0, abs(first_med) * 0.05):
+        return (f"近 {len(seq)} 天基本持平（前 {half} 天中位 {first_med:.0f} → "
+                f"后 {half} 天中位 {last_med:.0f} {unit}）")
+    arrow = "上升" if last_med > first_med else "下降"
+    good = (last_med > first_med) if higher_better else (last_med < first_med)
+    return (f"近 {len(seq)} 天{arrow}（前 {half} 天中位 {first_med:.0f} → "
+            f"后 {half} 天中位 {last_med:.0f} {unit}，"
             f"{'方向正确' if good else '方向需留意'}）")
 
 
@@ -913,7 +1076,7 @@ def _judge_rows(ctx) -> list:
 
     # ── 饮食结构 ──
     nut = ctx["nutrition"]
-    wkg = (ctx.get("body") or {}).get("weight_kg")
+    wkg = ctx.get("weight_energy") or (ctx.get("body") or {}).get("weight_kg")
     pro_lo_t = round(1.2 * wkg) if wkg else 90
     pro_hi_t = round(1.6 * wkg) if wkg else 124
     floor = ctx.get("intake_floor", 1500)
@@ -925,8 +1088,18 @@ def _judge_rows(ctx) -> list:
             bad_bits.append(f"蔬菜仅 <b>{nut['veg_total']:g} 拳</b>，不足 4 拳")
     if nut.get("protein_low") is not None:
         if nut["protein_low"] >= pro_lo_t:
-            good_bits.append(f"蛋白质 <b>{nut['protein_low']:g}–{nut['protein_high']:g} g</b>"
-                             f"在参考 {pro_lo_t}–{pro_hi_t} g 内")
+            # 2026-10-28 修：区间整段高于参考上限时，不能说「在参考 X–Y 内」。
+            # 判定实取下界（蛋白偏低才是风险），但措辞必须与数值一致。
+            _ph = nut.get("protein_high") or nut["protein_low"]
+            if nut["protein_low"] > pro_hi_t:
+                good_bits.append(f"蛋白质 <b>{nut['protein_low']:g}–{_ph:g} g</b>"
+                                 f"高于参考 {pro_lo_t}–{pro_hi_t} g（保肌角度是好事）")
+            elif _ph > pro_hi_t:
+                good_bits.append(f"蛋白质 <b>{nut['protein_low']:g}–{_ph:g} g</b>"
+                                 f"下界在参考 {pro_lo_t} g 之上、上界超出 {pro_hi_t} g")
+            else:
+                good_bits.append(f"蛋白质 <b>{nut['protein_low']:g}–{_ph:g} g</b>"
+                                 f"在参考 {pro_lo_t}–{pro_hi_t} g 内")
         else:
             bad_bits.append(f"蛋白质 <b>{nut['protein_low']:g}–{nut['protein_high']:g} g</b>，"
                             f"下界低于参考 {pro_lo_t} g")
@@ -943,7 +1116,11 @@ def _judge_rows(ctx) -> list:
         if ca_l >= ca_t:
             good_bits.append(f"钙 <b>{ca_l:.0f}–{ca_h:.0f} mg</b>达标（≥{ca_t}）")
         else:
-            bad_bits.append(f"钙 <b>{ca_l:.0f}–{ca_h:.0f} mg</b>，低于 {ca_t} mg 参考")
+            # 2026-10-26 改：下界/上界分开说，避免「605–886 低于 800」这种自相矛盾的句子
+            if ca_h >= ca_t:
+                bad_bits.append(f"钙 <b>{ca_l:.0f}–{ca_h:.0f} mg</b>，下界低于 {ca_t} mg（上界已达标）")
+            else:
+                bad_bits.append(f"钙 <b>{ca_l:.0f}–{ca_h:.0f} mg</b>，上下界均低于 {ca_t} mg 参考")
     if ctx.get("window_ok") is True:
         good_bits.append(f"进食窗口 <b>{ctx['first_meal']}–{ctx['last_meal']}</b> 完全落在 "
                          f"{cfg.get('eating_window', {}).get('start', '12:00')}–"
@@ -956,15 +1133,28 @@ def _judge_rows(ctx) -> list:
     if nut.get("kcal_low") is None:
         rows.append(("饮食结构", "na", "当日没有饮食记录，无法判定。"))
     else:
+        # 2026-10-28 修（历史复现 4 次：10-16 / 10-18 / 10-20 / 10-28）：
+        # 「摄入量够不够」不属于「饮食结构」，混进同一行会让一句话总结写「饮食结构需注意」，
+        # 而同页总览写「饮食结构 各项达标 4/4」，自相矛盾。
+        # 改法：结构项（蛋白/蔬菜/碳水/钙/窗口）单独判定；仅当摄入下界偏低时行名改为「饮食摄入」。
+        _struct_bad = [b for b in bad_bits if "摄入区间下界" not in b]
+        _intake_bad = any("摄入区间下界" in b for b in bad_bits)
+        _label = "饮食结构" if _struct_bad else ("饮食摄入" if _intake_bad else "饮食结构")
         parts = []
         if good_bits:
             parts.append("；".join(good_bits) + "；")
         if bad_bits:
             parts.append("；".join(bad_bits) + "。")
-        tail = ("——量够了，结构偏瘦。" if good_bits and bad_bits
-                else ("。" if not bad_bits else "。"))
+        if _struct_bad and _intake_bad:
+            tail = "——结构与量都要调。"
+        elif _struct_bad:
+            tail = "——结构有偏差，量不是问题。"
+        elif _intake_bad:
+            tail = "——结构没问题，是量偏少。"
+        else:
+            tail = "。"
         body_html = "".join(parts) + f'<span class="dim">{tail}</span>'
-        rows.append(("饮食结构", "warn" if bad_bits else "ok", body_html))
+        rows.append((_label, "warn" if bad_bits else "ok", body_html))
 
     # ── 睡眠 ──
     if ctx.get("no_sleep"):
@@ -987,7 +1177,14 @@ def _judge_rows(ctx) -> list:
                 state = "warn"
             if sl.get("start_ts") and sl.get("end_ts"):
                 bits.append(f"入睡 {sl['start_ts'][11:16]} · 起床 {sl['end_ts'][11:16]}")
-            if sl.get("awake_min"):
+            if sleep_fragment(sl, cfg):
+                bits.append("<b>⚠ 云端只返回了这一小段</b>，未见更早的夜间段，"
+                            "实际整夜可能更长——本条只作记录，不据此判定整夜睡眠")
+            if sl.get("awaken_min"):
+                # 2026-10-26：清醒过久时拆开说 —— 别把卧床时长当睡眠时长
+                bits.append(f"卧床 <b>{sl['inbed_min']//60} 小时 {sl['inbed_min']%60} 分</b>，"
+                            f"其中清醒 <b>{sl['awaken_min']} 分</b>，睡着即上面这个时长")
+            elif sl.get("awake_min"):
                 bits.append(f"夜间清醒仅 {sl['awake_min']} 分")
             wk = ctx.get("week") or {}
             if wk.get("sleep_days", 0) <= 1:
@@ -1005,10 +1202,16 @@ def _judge_rows(ctx) -> list:
     if steps is None and not wmin:
         rows.append(("运动", "na", "当日没有活动数据，无法判定。"))
     else:
+        # 2026-10-26 加：休息恢复日不做步数考核（锚定星期几，不锚定步数）
+        _wp = cfg.get("workout_plan") or {}
+        _rest = set(_wp.get("rest_weekdays") or [])
+        _is_rest = bool(_rest) and date.fromisoformat(ctx["day"]).isoweekday() in _rest
         bits, bad = [], []
         if steps is not None:
             if steps >= tgt_steps:
                 bits.append(f"<b>{steps:,} 步</b>（目标 {tgt_steps:,}）")
+            elif _is_rest:
+                bits.append(f"<b>{steps:,} 步</b>（休息恢复日，步数目标不考核）")
             else:
                 bad.append(f"步数 <b>{steps:,}</b>，距目标 {tgt_steps:,} 还差 {tgt_steps - steps:,}")
         if wmin >= tgt_act:
@@ -1018,11 +1221,27 @@ def _judge_rows(ctx) -> list:
         if rhr is not None and base is not None:
             if rhr - base >= 5:
                 bad.append(f"静息心率 {rhr} bpm，比 30 天均值高 {rhr - base} bpm")
+            elif base - rhr >= 5:
+                # 2026-10-28 修：低于均值 5 bpm 以上不能说「持平」（45 vs 51 曾写持平）
+                bits.append(f"静息心率 <b>{rhr} bpm</b>，低于 30 天均值 {base} bpm")
             else:
                 bits.append(f"静息心率 {rhr} bpm 与 30 天均值持平")
         state = "warn" if bad else "ok"
-        tail = ("——强度够了，不必再加。" if not bad and wmin >= tgt_act
-                else ("。" if not bad else "。"))
+        # 2026-10-24 改：有氧达标但窗口内零抗阻时，不再说「不必再加」——
+        # 全有氧 + 蛋白不稳是瘦体重流失的结构性原因（第一周复盘结论）。
+        if not bad and wmin >= tgt_act:
+            if (ctx.get("week") or {}).get("strength_days", 0) == 0:
+                _slx = None if ctx.get("no_sleep") else ctx.get("sleep")
+                if _slx and _slx.get("total_min") and _slx["total_min"] < 300:
+                    # 2026-10-25：严重缺觉日不再让「加抗阻」与其他建议打架
+                    tail = ("——有氧强度已够；但今夜严重缺觉，抗阻改到睡够之后再加，"
+                            "今日先补觉。")
+                else:
+                    tail = "——有氧强度已够；但近 7 天仍<b>零抗阻</b>，掉肌肉的结构性问题还在，建议运动后加 10 分钟自重抗阻。"
+            else:
+                tail = "——强度够了，不必再加。"
+        else:
+            tail = "。"
         rows.append(("运动", state, "；".join(bits + bad) + f"。<span class='dim'>{tail}</span>"))
     return rows
 
@@ -1043,14 +1262,39 @@ def _headline_advice(ctx) -> list:
     out = []
 
     # ── 饮食 ──
-    wkg = (ctx.get("body") or {}).get("weight_kg")
+    wkg = ctx.get("weight_energy") or (ctx.get("body") or {}).get("weight_kg")
     pro_lo_t = round(1.2 * wkg) if wkg else 90
     floor = ctx.get("intake_floor", 1500)
     bits = []
     ptrend = week_trend_phrase(wk, "protein_trend", "g", higher_better=True)
     seq = [v for _, v in wk.get("protein_trend") or []]
-    if len(seq) >= 3 and seq[-1] < seq[-3]:
-        bits.append(f"本周蛋白质连降（{seq[0]:g} → {seq[-1]:g} g）是当前最明确的短板")
+    # 2026-10-24 改：原「seq[-1] < seq[-3] 即判连降，文案引用 seq[0]（窗口起点旧值）」
+    # 两处都会被离群日带偏（实例：129 g 是 10-17 旧值，中间 78→100→118→100→113 并非连降）。
+    # 改用最小二乘斜率判方向，文案给窗口中枢与最近值。
+    _slope = None
+    if len(seq) >= 4:
+        _n = len(seq)
+        _xs = list(range(_n))
+        _mx = (_n - 1) / 2
+        _my = sum(seq) / _n
+        _sxx = sum((x - _mx) ** 2 for x in _xs)
+        _sxy = sum((x - _mx) * (y - _my) for x, y in zip(_xs, seq))
+        _slope = (_sxy / _sxx) if _sxx else 0.0   # g/天
+    if _slope is not None and _slope <= -1.5:     # 每天掉 ≥1.5 g（≈一周 −10 g）才算走低
+        # 2026-10-26 改：斜率越线但最近一天已回升时，不再说「走低」——
+        # 实例 10-25：斜率 −1.57 触发，文案却写成「中枢 93 g，最近 94 g」，自相矛盾。
+        if seq[-1] < _my:
+            bits.append(f"本周蛋白质走低（{_n} 天中枢 {_my:.0f} g，最近 {seq[-1]:g} g）"
+                        "是当前最明确的短板")
+        else:
+            bits.append(f"蛋白质近 {_n} 天整体略降（中枢 {_my:.0f} g），"
+                        f"但最近一天已回到 {seq[-1]:g} g")
+    elif _slope is not None and _slope >= 1.5:   # 2026-10-25 加：上升方向不再回退分段中位
+        bits.append(f"蛋白质近 {_n} 天在回升（中枢 {_my:.0f} g，最近 {seq[-1]:g} g）")
+    elif _slope is not None:
+        # 斜率平稳时也不回退 median 分段 —— 两者口径不一致会自相矛盾
+        # （实例：10-24 斜率 +1.46 判「上升」，median 分段却写成「近 7 天下降」）
+        bits.append(f"蛋白质近 {_n} 天基本平稳（中枢 {_my:.0f} g，最近 {seq[-1]:g} g）")
     elif ptrend:
         bits.append(f"蛋白质{trend_tail(ptrend)}")
     if nut.get("protein_low") is not None and nut["protein_low"] < pro_lo_t:
@@ -1066,9 +1310,13 @@ def _headline_advice(ctx) -> list:
     if ca_l is not None:
         ca_t = (cfg.get("goals", {}) or {}).get("calcium_mg", 800)
         if ca_l < ca_t:
-            gap_ca = int(ca_t - (nut.get("calcium_high") or ca_l))
-            bits.append(f"钙只有 <b>{ca_l:.0f}–{nut.get('calcium_high', ca_l):.0f} mg</b>，"
-                        f"距 {ca_t} mg 差约 {max(gap_ca, 0)} mg —— "
+            ca_h = nut.get("calcium_high") or ca_l
+            # 2026-10-24 改：原 gap 用「参考 − 上界」算，上界达标时出现「差约 0 mg」的错话；
+            # 改为下界差值 + 上界达标与否两个事实分开说。
+            gap_lo = int(round(ca_t - ca_l))
+            hi_note = "，上界已达标" if ca_h >= ca_t else ""
+            bits.append(f"钙 <b>{ca_l:.0f}–{ca_h:.0f} mg</b>，下界距 {ca_t} mg 还差 "
+                        f"{gap_lo} mg{hi_note} —— "
                         f"今天加 <b>一杯脱脂奶 200 ml（约 210 mg）或 200 g 无糖酸奶</b>，"
                         f"再配一拳深绿色叶菜（西兰花 / 芥蓝）就能补齐")
     if nut.get("kcal_low") is None:
@@ -1080,7 +1328,9 @@ def _headline_advice(ctx) -> list:
     out.append(("饮食", "；".join(bits) + "。"))
 
     # ── 运动 ──
-    streak = wk.get("workout_streak", 0)
+    # 2026-10-24 重写（用户 2026-10-22 定案）：判定锚定「星期几」，不锚定「连续天数」。
+    # 训练日练了 = 达标；训练日没练 = 真断档；休息日 = 正常（散步属恢复手段，不算断档）。
+    # 原 workout_streak 的「本周已连续 N 天 / 节奏还没连上」措辞一律废除。
     dlo, dhi = wl.get("target_window_months", [6, 9])
     goal = g.get("weight_kg", 65)
     start = wl.get("start_kg", 77)
@@ -1088,14 +1338,60 @@ def _headline_advice(ctx) -> list:
     # kg/周 = 需减总量 ÷ 每月约 4.345 周 ÷ 月数（D-20 口径：6 个月 ≈ 0.47 kg/周，9 个月 ≈ 0.31）
     r_mo = need / 4.345 / dlo
     r_wk = need / 4.345 / dhi
+    tgt_act = cfg.get("thresholds", {}).get("active_minutes_target", 30)
+    train_wd = set((wk.get("workout_plan") or {}).get("train_weekdays") or [])
+    strength_days = wk.get("strength_days", 0)
+    lw = wk.get("last_workout") or {}
+    trained_min = ctx.get("workout_min") or 0
+
     bits = []
-    if streak >= 3:
-        bits.append(f"本周已连续 <b>{streak} 天</b>中高强度，节奏已经立住")
-        bits.append(f"今日维持 <b>30–40 分钟</b>即可，<b>不加量</b>——"
-                    f"{need:g} kg 要走 {dlo}–{dhi} 个月，"
-                    f"每周 {r_wk:.2f}–{r_mo:.2f} kg 就够，优先慢、不优先快")
+    # 2026-10-25 加：昨夜严重缺觉（<5h）时，头部运动建议同步降级 ——
+    # 否则会出现「只做低强度（详细版）」与「加 10 分钟抗阻（头部）」自相矛盾。
+    _sl_h = None if ctx.get("no_sleep") else ctx.get("sleep")
+    _short_h = bool(_sl_h and _sl_h.get("total_min") and _sl_h["total_min"] < 300)
+    if train_wd:
+        d0 = date.fromisoformat(ctx["day"])
+        dow = d0.isoweekday()
+        d_next = d0 + timedelta(days=1)          # 「今日」= 报告日 +1
+        next_train = d_next.isoweekday() in train_wd
+        _pace = (f"{need:g} kg 要走 {dlo}–{dhi} 个月，"
+                 f"每周 {r_wk:.2f}–{r_mo:.2f} kg 就够，优先慢、不优先快")
+        if dow in train_wd and trained_min >= tgt_act:
+            bits.append(f"昨日为计划训练日，已练 <b>{trained_min:g} 分钟</b>，达标")
+            if _short_h:
+                _sm = _sl_h["total_min"]
+                bits.append(f"但昨夜只睡 <b>{_sm//60} 小时 {_sm%60} 分</b>，"
+                            f"今日只做 <b>低强度散步 20–30 分钟</b>，不做高强度、不加量——先补觉")
+            else:
+                if next_train:
+                    bits.append(f"今日同为计划训练日，维持 <b>30–40 分钟</b>即可，"
+                                f"<b>不加量</b>——{_pace}")
+                else:
+                    # 2026-10-28 修：休息恢复日原写「维持 30–40 分钟即可」，
+                    # 与同句「休息恢复日」自相矛盾（10-26 记录过，本次复现）。
+                    bits.append(f"今日为休息恢复日，<b>不安排中高强度</b>，"
+                                f"散步 20–30 分钟即够，<b>不加量</b>——{_pace}")
+        elif dow in train_wd:
+            bits.append(f"昨日为计划训练日但没有训练记录，这周是<b>真断档</b>——"
+                        f"今日把 <b>{tgt_act} 分钟</b>中强度补上（{_pace}）")
+        else:
+            lw_sport = (lw.get("sport") or "").lower()
+            lw_min = lw.get("duration_min") or 0
+            if lw_sport and ("walk" in lw_sport or "walking" in lw_sport):
+                bits.append(f"昨日为休息恢复日，{lw_min:g} 分钟散步属恢复手段，"
+                            f"<b>不算断档</b>，节奏正常")
+            else:
+                bits.append("昨日为休息恢复日，节奏正常")
+            bits.append(f"今日{'是计划训练日，练 <b>30–40 分钟</b>即可' if next_train else '同样以恢复为主、可散步'}，"
+                        f"<b>不加量</b>——{_pace}")
+        if strength_days == 0:
+            _r_verb = "今日运动后加" if next_train else "今日补上"
+            bits.append("近 7 天仍<b>零抗阻</b>——掉秤里一半是瘦体重的结构性原因，"
+                        + ("抗阻先缓一缓，等睡够了再加" if _short_h
+                           else f"{_r_verb} <b>10 分钟自重抗阻</b>")
+                        + "（深蹲 3×12 / 俯卧撑 3×10 / 弹力带划船 3×12）")
     else:
-        tgt_act = cfg.get("thresholds", {}).get("active_minutes_target", 30)
+        # 未配置 workout_plan → 退回「窗口内有运动天数」的旧口径（不提连续天数）
         act_days = len(wk.get("steps") or [])
         if act_days == 0:
             bits.append("本周没有活动记录，无法判断运动节奏。"
@@ -1104,15 +1400,20 @@ def _headline_advice(ctx) -> list:
         else:
             wdays = wk.get("workout_days", 0)
             win = wk.get("days", 7)
-            if streak == 0 and wdays >= 2:
-                # 休息日让 streak 归零 ≠ 没节奏（2026-10-19 用户同意改）
-                bits.append(f"近 {win} 天有 <b>{wdays} 天</b>中高强度运动，"
-                            f"昨日休息日属正常节奏，不是断档")
-                bits.append(f"今日恢复一次 <b>{tgt_act} 分钟</b>中强度运动"
-                            f"（快走 / 踏步 / 单车），<b>不加量</b>")
+            if trained_min >= tgt_act:
+                bits.append(f"昨日中高强度 <b>{trained_min:g} 分钟</b>达标；"
+                            f"近 {win} 天共 <b>{wdays} 天</b>有运动")
+            elif wdays >= 2:
+                bits.append(f"近 {win} 天有 <b>{wdays} 天</b>中高强度运动；"
+                            f"今日恢复一次 <b>{tgt_act} 分钟</b>中强度运动，<b>不加量</b>")
             else:
-                bits.append(f"本周运动连续 {streak} 天，节奏还没连上。"
+                bits.append(f"近 {win} 天仅 {wdays} 天有运动，"
                             f"今日安排一次 <b>{tgt_act} 分钟</b>以上中强度运动（快走 / 踏步 / 单车）")
+            if strength_days == 0:
+                bits.append("近 7 天仍<b>零抗阻</b>——掉秤里一半是瘦体重的结构性原因，"
+                            + ("抗阻先缓一缓，等睡够了再加" if _short_h
+                               else "今日运动后加 <b>10 分钟自重抗阻</b>")
+                            + "（深蹲 3×12 / 俯卧撑 3×10 / 弹力带划船 3×12）")
     st = week_trend_phrase(wk, "steps", "步", higher_better=True)
     if st:
         bits.append(st.replace("方向正确", "步数方向正确").replace("方向需留意", "步数方向需留意"))
@@ -1134,19 +1435,35 @@ def _headline_advice(ctx) -> list:
             if sdays <= 1:
                 bits.append(f"昨夜 {tmin//60} 小时 {tmin%60} 分达标，但目前只有 "
                             f"<b>{sdays} 天</b>样本，还谈不上趋势")
+            elif sleep_fragment(sl, cfg):
+                bits.append(f"昨夜<b>只记录到 {tmin//60} 小时 {tmin%60} 分</b>"
+                            f"（起点 {sl['start_ts'][11:16]}），未见更早的夜间段 → "
+                            "疑似未佩戴或未同步，整夜时长不可判")
+                bits.append("今晚确认佩戴到位，明早先看有没有补上完整夜间段")
+                out.append(("睡眠", "；".join(bits) + "。"))
+                return out
             elif tmin < tgt - 30:
+                if tgt - tmin >= 120:      # 2026-10-25：严重不足（通宵/熬夜）档
+                    bits.append(f"昨夜入睡 {sl['start_ts'][11:16]}、只睡 "
+                                f"<b>{tmin//60} 小时 {tmin%60} 分</b>，"
+                                f"距目标差 {tgt - tmin} 分钟，属<b>严重不足</b>")
+                    bits.append("今晚提前 <b>60–90 分钟</b>上床，白天补 <b>20–30 分钟</b>午睡"
+                                "（不晚于 15:00）——今天先补觉，别用运动补")
+                    out.append(("睡眠", "；".join(bits) + "。"))
+                    return out
                 bits.append(f"昨夜 {tmin//60} 小时 {tmin%60} 分，距目标差 {tgt - tmin} 分钟")
             else:
                 bits.append(f"昨夜 {tmin//60} 小时 {tmin%60} 分达标，"
-                            f"本周 {sdays} 天记录，继续保持")
+                            f"近 7 夜已记录 {wk.get('sleep_days_7', sdays)} 夜，继续保持")
             bits.append("今晚保持 <b>23:30 前上床</b>，先把入睡时间稳住")
         out.append(("睡眠", "；".join(bits) + "。"))
     return out
 
 
 def trend_tail(phrase: str) -> str:
-    """把 week_trend_phrase 的长句压成短尾巴，用于头部短文案。"""
-    return phrase.split("（")[0] + ("。" if not phrase.endswith("。") else "")
+    """把 week_trend_phrase 的长句压成短尾巴，用于头部短文案。
+    2026-10-24：不再自带句号——拼接处统一加，否则出现「上升。。」双句号。"""
+    return phrase.split("（")[0]
 
 
 def build_headline(ctx) -> str:
@@ -1246,6 +1563,22 @@ def build_conclusion(ctx) -> str:
 
 # ---------------------------------------------------------------- 渲染
 
+def _dist_txt(activity) -> str:
+    """步数旁边的距离展示，带步幅合理性门控。
+
+    2026-10-29 加：设备的 distance_km 长期未校准，换手环后步幅在 0.20–0.70 之间乱跳
+    （10-28 为 0.34 m/步，正常步行约 0.67），直接展示会给出错误里程。
+    口径：步幅落在 0.50–0.90 才当成可信距离；否则只标「不可信」，不进趋势、不做换算。
+    步数与活动 kcal 不受此字段影响，仍照常判定。
+    """
+    if not activity or not activity.get("distance_km") or not activity.get("steps"):
+        return ""
+    stride = activity["distance_km"] * 1000.0 / activity["steps"]
+    if 0.50 <= stride <= 0.90:
+        return f" · 距离 {activity['distance_km']:g} km"
+    return f" · 距离字段失真不展示（步幅 {stride:.2f} m/步，正常约 0.67）"
+
+
 def render(con, cfg, day: str, no_sleep: bool = False) -> str:
     th = cfg.get("thresholds", {})
     days_trend = th.get("trend_days", 30)
@@ -1267,6 +1600,19 @@ def render(con, cfg, day: str, no_sleep: bool = False) -> str:
     sleep_rows = many(con, "SELECT * FROM sleep_session WHERE date <= ? AND date >= ? ORDER BY date",
                       (day_next, start7))
     sleep = one(con, "SELECT * FROM sleep_session WHERE date = ?", (day_next,))
+    # 2026-10-26 加：夜间清醒必须从「睡眠时长」里扣掉，只留在「卧床时长」里。
+    # 起因：10-25 夜卧床 741 分（21:26→09:48），stages 逐段汇总清醒 267 分，
+    # 而源库 time_awake_minutes 只写 1 分 → 原口径把 12h21 当"睡眠达标"，实际实睡 7h55。
+    # 口径：清醒 ≥30 分 且 占卧床 ≥8% 才拆分（日常 0–1 分不动，历史行不受影响）。
+    # 归一化后：total_min = 实睡（判定与文案基准），inbed_min / awaken_min = 卧床 / 清醒。
+    if sleep and sleep.get("total_min"):
+        _inbed = sleep["total_min"]
+        _aw = sleep.get("awake_min") or 0
+        if _aw >= 30 and _aw >= _inbed * 0.08:
+            sleep = dict(sleep)
+            sleep["inbed_min"] = _inbed
+            sleep["awaken_min"] = _aw
+            sleep["total_min"] = max(_inbed - _aw, 0)
     activity = one(con, "SELECT * FROM activity_daily WHERE date = ?", (day,))
     rhr = one(con, "SELECT bpm FROM heart_rate WHERE date(ts)=? AND hr_type='resting' ORDER BY ts DESC LIMIT 1", (day,))
     rhr_avg = one(con, "SELECT AVG(bpm) AS v FROM heart_rate WHERE hr_type='resting' AND date(ts) <= ? "
@@ -1278,7 +1624,10 @@ def render(con, cfg, day: str, no_sleep: bool = False) -> str:
     waist = one(con, "SELECT * FROM waist WHERE date <= ? ORDER BY date DESC LIMIT 1", (day,))
     body = one(con, "SELECT * FROM body_metric WHERE date <= ? ORDER BY date DESC LIMIT 1", (day,))
     body_today = one(con, "SELECT * FROM body_metric WHERE date = ?", (day,))
-    body_latest = one(con, "SELECT * FROM body_metric ORDER BY date DESC LIMIT 1", ())
+    # 2026-10-29 修：「今晨值」限定在报告日次日以内。原写法取全表最新一条，
+    # 导致重生成历史报告时出现「10-27 日报写今晨 10-29」这类穿越文案。
+    body_latest = one(con, "SELECT * FROM body_metric WHERE date <= ? ORDER BY date DESC LIMIT 1",
+                      ((d0 + timedelta(days=1)).isoformat(),))
     workouts = many(con, "SELECT * FROM workout WHERE date(start_ts)=? ORDER BY start_ts", (day,))
     meals = many(con, "SELECT * FROM meal WHERE date = ? ORDER BY time", (day,))
     portions = many(con, "SELECT * FROM portion_library ORDER BY times_used DESC LIMIT 5")
@@ -1311,17 +1660,35 @@ def render(con, cfg, day: str, no_sleep: bool = False) -> str:
     workout_min = sum(w["duration_min"] or 0 for w in workouts) if workouts else None
     first_meal = meals[0]["time"] if meals else None
     last_meal = meals[-1]["time"] if meals else None
-    # [market] 进食窗口为可选功能：config 里没有该块、或未显式 enabled，一律不判定
-    win = cfg.get("eating_window") or {}
+    win = cfg.get("eating_window", {})
     window_ok = None
     window_out = []
-    if (win.get("enabled") is True) and first_meal and last_meal:
+    if first_meal and last_meal:
         window_ok = (first_meal >= win.get("start", "12:00")) and (last_meal <= win.get("end", "20:00"))
         for m in meals:
             if m["time"] < win.get("start", "12:00") or m["time"] > win.get("end", "20:00"):
                 window_out.append(m["time"])
 
-    weight_for_energy = (body or {}).get("weight_kg")
+    # 2026-10-29 修：报告日体重读数若被判定为「单日跳变异常」，且存在已复核的相邻有效读数，
+    # 则能量核算（BMR / 蛋白参考）改用有效读数。
+    # 起因：10-28 晨 72.4 kg（前一日 74.2、次日 74.0，前后都不接，已复核证伪），
+    # 报告仍按 72.4 算 BMR 1583 并写「距目标还差 7.4 kg」，真实应为 74.0 / 9.0 kg。
+    # 原则与 10-28 定的「异常读数不进趋势判据」一致，只是从趋势词延伸到主值本身。
+    weight_eff = (body or {}).get("weight_kg")
+    weight_anom_src = None
+    weight_anom_prev = None
+    if body and body.get("weight_kg") and body_latest and body_latest.get("weight_kg") \
+            and body_latest["date"] != body["date"]:
+        _prev_b = con.execute(
+            "SELECT weight_kg FROM body_metric WHERE date < ? AND weight_kg IS NOT NULL "
+            "ORDER BY date DESC LIMIT 1", (body["date"],)).fetchone()
+        _j_prev = abs(body["weight_kg"] - _prev_b[0]) if _prev_b else 0.0
+        _j_next = abs(body_latest["weight_kg"] - body["weight_kg"])
+        if _j_prev > 0.8 and _j_next > 0.8:
+            weight_eff = body_latest["weight_kg"]
+            weight_anom_src = body          # 保留被证伪的那一行，用于文案
+            weight_anom_prev = _prev_b[0] if _prev_b else None
+    weight_for_energy = weight_eff
     energy = calc_energy(weight_for_energy, cfg, activity)
     gap = calc_gap(energy, nutrition)
 
@@ -1334,6 +1701,7 @@ def render(con, cfg, day: str, no_sleep: bool = False) -> str:
            "rhr": rhr["bpm"] if rhr else None,
            "rhr_base": round(rhr_avg["v"]) if rhr_avg and rhr_avg["v"] else None,
            "waist": waist, "body": body, "body_today": body_today,
+           "weight_energy": weight_for_energy,
            "nutrition": nutrition, "workout_min": workout_min,
            "first_meal": first_meal, "last_meal": last_meal, "window_ok": window_ok,
            "window_out": window_out, "energy": energy, "gap": gap,
@@ -1343,7 +1711,8 @@ def render(con, cfg, day: str, no_sleep: bool = False) -> str:
            "no_sleep": bool(no_sleep),
            # 报告日相对"今天"的称谓：当日速览说"当天"，昨日汇总说"昨天"
            "day_label": "当天" if day == date.today().isoformat() else "昨天",
-           "week": build_week_ctx(con, day, days_detail)}
+           "week": build_week_ctx(con, day, days_detail,
+                                  workout_plan=cfg.get("workout_plan"))}
 
     kcal_target = int(g.get("calorie_target_kcal") or round(g.get("weight_kg", 70) * 30))
 
@@ -1386,17 +1755,23 @@ def render(con, cfg, day: str, no_sleep: bool = False) -> str:
 
     # ── 体格 ──
     if body and body.get("weight_kg"):
-        cur = body["weight_kg"]
+        cur = weight_eff or body["weight_kg"]
         goal_w = g.get("weight_kg", 65.0)
         latest = body_latest or body
-        left = latest["weight_kg"] - goal_w
+        # 2026-10-28 修：缺口一律按「本报告主值」算，不能拿今晨值算缺口却显示报告日数值
+        #（10-28 曾出现「74.2 kg · 距目标还差 7.4 kg」，而 74.2−65=9.2，自相矛盾）。
+        left = cur - goal_w
+        _d_latest = (latest["weight_kg"] - cur) if latest else 0.0
         src_map = {"scale_mcp": "体脂秤", "photo": "照片", "manual": "手动"}
         src = src_map.get(body.get("source"), body.get("source") or "—")
         # 体重（减重语义）：**下降=达标**，故 higher_better=False。
         # 容差用绝对量 0.4 kg（≈速率安全下沿 0.4 kg/周 × 6 条记录窗口）：
         #   原相对口径 2%×75kg≈1.5 kg 会把「周减 0.4–0.8 达标」误判成持平（2026-10-18 修）。
         # 持平仍在此处手工提级为 warn —— 减重期没进展属于需留意。
-        trend_seq = [r["weight_kg"] for r in body_rows][-6:]
+        # 2026-10-29：报告日读数被证伪时，趋势序列先剔除该点再判词。
+        _trend_rows = [r for r in body_rows
+                       if not (weight_anom_src and r["date"] == weight_anom_src["date"])]
+        trend_seq = [r["weight_kg"] for r in _trend_rows if r.get("weight_kg")][-6:]
         wword, wcls = trend_word(trend_seq, None, None, higher_better=False, tol=0.4)
         if wword == "基本持平":
             wword, wcls = "持平未降", "warn"
@@ -1404,15 +1779,49 @@ def render(con, cfg, day: str, no_sleep: bool = False) -> str:
         unit = cfg.get("profile", {}).get("weight_unit", "jin")
         goal_txt = f"{goal_w:g} kg" + (f"（{goal_w * 2:g} 斤）" if unit == "jin" else "")
         left_txt = f"{left:.1f} kg" + (f"（{left * 2:.1f} 斤）" if unit == "jin" else "")
-        if latest["date"] != body["date"]:
+        if weight_anom_src:
+            # 报告日读数已被相邻两点证伪（前一日与今晨都不接）：主值改用已复核的有效读数，
+            # 把异常点单列说明。数值宁可少一个「漂亮数字」，也不能让错误读数决定缺口与距目标。
+            _aw = weight_anom_src["weight_kg"]
+            ref = (f"目标 <b>{goal_txt}</b> · 距目标还差 <b>{left_txt}</b><br>"
+                   f"今晨 {latest['date'][5:]} <b>{wt(latest['weight_kg'], cfg)}</b>"
+                   f"（{src_map_latest}，已复核）· 来源 {src} · 近 6 日<b>{wword}</b><br>"
+                   f"⚠ {body['date'][5:]} 读数 <b>{_aw:g} kg</b> 判为异常：较前一记录 "
+                   f"<b>{((weight_anom_prev or _aw) - _aw):+.1f} kg</b>（{weight_anom_prev or 0:g}）、"
+                   f"较今晨 <b>{latest['weight_kg'] - _aw:+.1f} kg</b>（{latest['weight_kg']:.1f}），"
+                   f"前后两点都不接，疑测量条件不同（称重时间 / 是否排尿 / 空腹），"
+                   f"<b>该点不进趋势判据</b>，趋势词已剔除后重算")
+        elif latest["date"] != body["date"]:
+            # 单日变动过大（>0.8 kg）时如实标「待复核」，不让异常读数悄悄改写趋势
+            _anom = (f" ⚠ 单日变动 {_d_latest:+.1f} kg，超出正常波动，"
+                     f"疑测量条件不同（称重时间 / 是否排尿 / 空腹），<b>不进趋势判据</b>，请复核"
+                     ) if abs(_d_latest) > 0.8 else ""
             ref = (f"目标 <b>{goal_txt}</b> · 距目标还差 "
                    f"<b>{left_txt}</b><br>"
                    f"今晨 {latest['date'][5:]} {wt(latest['weight_kg'], cfg)}"
-                   f"（{src_map_latest}）"
+                   f"（{src_map_latest}）{_anom}"
                    f" · 来源 {src} · 近 6 日<b>{wword}</b>")
         else:
+            # 2026-10-28 修：当天速览下 latest == body（同日），上面的跳变标记永不触发，
+            # 导致 10-28「单日 −1.8 kg」这类异常读数被当成权威值写进趋势词。
+            # 改用「前一有效记录 → 本日」对比；命中跳变时趋势词重算并剔除当日点。
+            _hist = [r for r in body_rows if r["date"] < body["date"] and r.get("weight_kg")]
+            _prev_w = _hist[-1]["weight_kg"] if _hist else None
+            _jump = (cur - _prev_w) if _prev_w is not None else 0.0
+            _is_anom = abs(_jump) > 0.8
+            _anom = ""
+            if _is_anom:
+                _seq2 = [r["weight_kg"] for r in _hist][-6:]
+                if len(_seq2) >= 2:
+                    wword, wcls = trend_word(_seq2, None, None, higher_better=False, tol=0.4)
+                    if wword == "基本持平":
+                        wword, wcls = "持平未降", "warn"
+                _anom = (f"<br>⚠ 较前一记录 <b>{_jump:+.1f} kg</b>"
+                         f"（{_prev_w:g} → {cur:g}，{_hist[-1]['date'][5:]}）超出正常波动，"
+                         f"疑测量条件不同（称重时间 / 是否排尿 / 空腹），"
+                         f"<b>本日值不进趋势判据</b>，趋势词已按剔除此点重算，请复核")
             ref = (f"目标 <b>{goal_txt}</b> · 距目标还差 <b>{left_txt}</b>"
-                   f" · 来源 {src} · 近 6 日<b>{wword}</b>")
+                   f" · 来源 {src} · 近 6 日<b>{wword}</b>{_anom}")
         add("体重", wword, wcls,
             wt(cur, cfg, html=True), ref, wcls == "warn")
     if waist and waist.get("waist_cm"):
@@ -1453,7 +1862,15 @@ def render(con, cfg, day: str, no_sleep: bool = False) -> str:
         word, cls = verdict_word(activity["steps"], tgt, None)
         ref = f"目标 <b>≥ {tgt:,} 步</b>"
         if activity.get("distance_km"):
-            ref += f" · 距离 {activity['distance_km']:g} km"
+            ref += _dist_txt(activity)
+        # 2026-10-26 加：休息恢复日不做步数考核 —— 与建议区「不必补走」口径统一，
+        # 否则同页会出现「步数目标不考核」与「过低 ▲」两个相反结论（10-25 周日实测命中）。
+        _wp_ov = cfg.get("workout_plan") or {}
+        _rest_ov = set(_wp_ov.get("rest_weekdays") or [])
+        if _rest_ov and date.fromisoformat(day).isoweekday() in _rest_ov:
+            word, cls = "不考核", "na"
+            ref = (f"<b>休息恢复日</b>，步数不作考核项（散步是恢复手段） · 参考目标 ≥ {tgt:,} 步"
+                   + _dist_txt(activity))
         add("步数", word, cls, f"{activity['steps']:,} <span class='u'>步</span>", ref, cls == "warn")
     if workouts:
         wtxt = " / ".join(f"{w['sport']} {w['duration_min']:g} 分" for w in workouts)
@@ -1482,15 +1899,28 @@ def render(con, cfg, day: str, no_sleep: bool = False) -> str:
         ref = f"目标 <b>{tgt//60}h{tgt%60:02d}</b>（容差 −30 分）"
         if st_t and en_t:
             ref += f"<br>入睡 <b>{st_t}</b> · 起床 <b>{en_t}</b>"
+        if sleep.get("inbed_min"):
+            # 2026-10-26：清醒过长时把卧床与实睡分开说，避免把"躺着不动"当成"睡着"
+            ref += (f"<br>卧床 <b>{sleep['inbed_min']//60}h{sleep['inbed_min']%60:02d}</b>"
+                    f" · 其中清醒 <b>{sleep['awaken_min']} 分</b>")
         if sleep.get("light_min"):
             ref += f" · 浅睡 {sleep['light_min']} 分"
         if sleep.get("rem_min"):
             ref += f" · REM {sleep['rem_min']} 分"
-        if sleep.get("awake_min"):
+        if sleep.get("awaken_min"):
+            pass   # 清醒时长已在上面「卧床 / 其中清醒」里说过，此处不重复
+        elif sleep.get("awake_min"):
             ref += f" · 夜醒 {sleep['awake_min']} 分"
         if ctx["week"].get("sleep_days", 0) <= 1:
             ref += "<br>⚠ 仅 1 天样本，记满 3 天才谈趋势"
-        add("睡眠", word, cls, f"{tmin//60}h{tmin%60:02d}", ref, cls == "warn")
+        if sleep_fragment(sleep, cfg):
+            # 2026-10-25 加：疑似片段时不下「过低」结论，只如实标记录不足
+            word, cls, flag = "疑似片段", "na", False
+            ref += ("<br><b>⚠ 云端只返回这一小段</b>，此前无夜间记录 → "
+                    "整夜时长不可判，<b>不作睡眠不足的判定依据</b>")
+        else:
+            flag = cls == "warn"
+        add("睡眠", word, cls, f"{tmin//60}h{tmin%60:02d}", ref, flag)
     else:
         add("睡眠", "数据不足", "na", "—",
             f"该夜无睡眠记录（可能未佩戴 / 未同步） · 目标 <b>{g.get('sleep_target_min', 450)//60}h"
@@ -1595,19 +2025,30 @@ def render(con, cfg, day: str, no_sleep: bool = False) -> str:
         st_t = (sleep.get("start_ts") or "")[11:16]
         en_t = (sleep.get("end_ts") or "")[11:16]
         bed_txt = f"入睡 {st_t} · 起床 {en_t}" if st_t and en_t else ""
-        sleep_line = (f"共 {sleep['total_min']//60}h{sleep['total_min']%60:02d}"
+        sleep_line = (f"实睡 {sleep['total_min']//60}h{sleep['total_min']%60:02d}"
                       f"（目标 {g.get('sleep_target_min',450)//60}h{g.get('sleep_target_min',450)%60:02d}）")
+        if sleep.get("inbed_min"):
+            # 2026-10-26：卧床与实睡分开列，否则"躺着 12 小时"会被读成"睡了 12 小时"
+            sleep_line += (f" · 卧床 {sleep['inbed_min']//60}h{sleep['inbed_min']%60:02d}"
+                           f"（其中清醒 {sleep['awaken_min']} 分）")
         if bed_txt:
             sleep_line += f" · {bed_txt}"
         if sleep.get("deep_min") is not None:
             sleep_line += f" · 深睡 {sleep['deep_min']} 分"
         if sleep.get("rem_min") is not None:
             sleep_line += f" · REM {sleep['rem_min']} 分"
-        if sleep.get("awake_min") is not None:
+        if sleep.get("awaken_min") is not None:
+            pass   # 清醒时长已在上面「卧床（其中清醒 X 分）」里列出，不重复
+        elif sleep.get("awake_min") is not None:
             sleep_line += f" · 夜间清醒 {sleep['awake_min']} 分"
         if sleep.get("wake_count") is not None:
             sleep_line += f" · 夜醒 {sleep['wake_count']} 次"
         sleep_line += f" · 评分 {sleep.get('score') or '—'}"
+        if sleep_fragment(sleep, cfg):
+            sleep_line += ("<br><b style='color:#b45309'>⚠ 疑似片段</b>：云端只返回这一小段，"
+                           "此前没有夜间睡眠记录 → 实际整夜时长可能远长于此，"
+                           "<b>本项只作记录，不作为「睡眠不足」的判定依据</b>。"
+                           "下次出报告前若补上完整夜间段，会以补上的为准。")
     else:
         sleep_line = ("<b>数据不足</b> —— 该夜（昨夜 → 今晨）没有睡眠记录，"
                       "可能是未佩戴设备或数据未同步。本项缺失会影响减重期的饥饿感判断。")
@@ -1697,11 +2138,9 @@ def render(con, cfg, day: str, no_sleep: bool = False) -> str:
         hr_txt = (f'{hr_day["lo"]}–{hr_day["hi"]} bpm'
                   f'<span style="color:#6f6f6a;font-size:12px"> · {hr_day["n"]} 个样本 · 均 {round(hr_day["avg"])}</span>')
 
-    # ── 进食窗口（[market] 可选功能：未在 config 里显式 enabled 则整卡不出）──
+    # ── 进食窗口 ──
     win_s, win_e = win.get("start", "12:00"), win.get("end", "20:00")
-    _win_on = win.get("enabled") is True
-    win_html = ""
-    if _win_on and first_meal and last_meal:
+    if first_meal and last_meal:
         wrows = [
             (f"首餐 ≥ {win_s}", first_meal, "ok" if first_meal >= win_s else "bad"),
             (f"末餐 ≤ {win_e}", last_meal, "ok" if last_meal <= win_e else "bad"),
@@ -1713,11 +2152,8 @@ def render(con, cfg, day: str, no_sleep: bool = False) -> str:
                               for k, v, c in wrows)
                     + "</tbody></table>")
         win_html += f'<div class="note">整体：{"完全符合 12:00–20:00 进食窗口。" if window_ok else "存在窗口外进食，需注意。"}</div>'
-    elif _win_on:
+    else:
         win_html = '<p class="note">当日无饮食记录，无法核对进食窗口。</p>'
-
-    window_card_html = (f'<div class="card"><h2>进食窗口核对（{win_s}–{win_e}）</h2>{win_html}</div>'
-                        if _win_on else "")
 
     # ── 睡眠分期卡片 ──
     # no_sleep=True（22:00 当日速览）时整卡不出。2026-10-16 用户定：
@@ -1734,6 +2170,16 @@ def render(con, cfg, day: str, no_sleep: bool = False) -> str:
 <span><i style="background:var(--awake)"></i>夜间清醒</span>
 </div>
 <div class="note">分期算法各厂商有差异，只与自己的历史对比，不跨设备比较。</div></div>"""
+
+    # ── 睡眠情况卡片（2026-10-26 修：no_sleep 时整卡不出，与「睡眠板块已关闭」口径一致）──
+    if no_sleep:
+        sleep_main_html = ""
+    else:
+        sleep_main_html = (
+            '<div class="card"><h2>睡眠情况</h2>'
+            f'<div>{sleep_line}</div>'
+            '<div class="note">统计的是<b>报告日当夜</b>的睡眠（昨夜 → 今晨；睡完才有意义，'
+            '故完整日报放次日早上出）。库内归属日 = 起床日，取数口径见 D-37。</div></div>')
 
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
@@ -1763,9 +2209,7 @@ def render(con, cfg, day: str, no_sleep: bool = False) -> str:
 <table><thead><tr><th>项目</th><th>值</th><th>说明</th></tr></thead><tbody>{dq_rows}</tbody></table>
 <div class="note"><b>总评：{dq_verdict}</b>。"纤维素"用蔬菜拳数代口径——照片判不出膳食纤维，本系统不录入该字段。</div></div>
 
-<div class="card"><h2>睡眠情况</h2>
-<div>{sleep_line}</div>
-<div class="note">统计的是<b>报告日当夜</b>的睡眠（昨夜 → 今晨；睡完才有意义，故完整日报放次日早上出）。库内归属日 = 起床日，取数口径见 D-37。</div></div>
+{sleep_main_html}
 
 <div class="card"><h2>今日建议</h2>
 {advice_html}
@@ -1773,7 +2217,7 @@ def render(con, cfg, day: str, no_sleep: bool = False) -> str:
 
 <div class="card"><h2>昨日建议执行率（T+1 对比）</h2>
 {exec_html}
-<div class="note">{src_note}　核验口径：建议自带可核验指标（步数 / 运动分钟 / 蔬菜拳数 / 睡眠 / 腰围周期），按当日实际数据自动判定。</div></div>
+<div class="note">{src_note}　核验口径：建议自带可核验指标（步数 / 运动分钟 / 蔬菜拳数 / 进食窗口 / 睡眠 / 腰围周期），按当日实际数据自动判定。</div></div>
 
 <div class="sect">以下是明细 · 想细看再往下</div>
 
@@ -1786,7 +2230,7 @@ def render(con, cfg, day: str, no_sleep: bool = False) -> str:
 蛋白质约 <b>{fmt(pro_low, nd=1)}–{fmt(pro_high, nd=1)} g</b> · 蔬菜约 <b>{fmt(veg, nd=1)} 拳</b>。
 蔬菜份数以「一拳」为一份——营养学里「一拳头」本身就是份量单位。</div></div>
 
-{window_card_html}
+<div class="card"><h2>进食窗口核对（{win_s}–{win_e}）</h2>{win_html}</div>
 
 <div class="card"><h2>当日摄入（热量区间）</h2>
 {kcal_bar(kcal_low, kcal_high, kcal_target)}

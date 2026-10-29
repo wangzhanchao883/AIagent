@@ -26,12 +26,14 @@ skills: [health-data-steward]
 - 首次引导话术 → `references/onboarding.md`
 - 建定时任务 → `references/scheduling.md`
 - 命令参数 → `references/commands.md`
+- 配餐建议怎么写（五段格式）→ `references/meal-advice-template.md`
 
-## 三件必须记住的事（其余细节按需查手册）
+## 四件必须记住的事（其余细节按需查手册）
 
 1. **新用户第一件事是配置**，判断依据是项目根有没有 `.setup_done.json`。没有就先跑 `bootstrap.py`，**不许跳过配置直接记数据**。
 2. **营养只写区间 + 置信度，从不写点值**。油量是最大误差源。
 3. **出日报前必须先跑 `sync_band.py`**，否则手环板块全空（最常见原因）。
+4. **回答「吃什么 / 怎么改 / 推荐什么」时，先给结果表，再给理由**；重量一律写**熟重**，结果表里不出现「生重」。格式照 `references/meal-advice-template.md`。
 
 ## 安全边界（硬约束，不因任何理由突破）
 

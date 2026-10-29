@@ -1,6 +1,6 @@
 {
   "name": "health-data-steward",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Personal health data steward. Turns body-weight scale photos, meal photos and dictation into structured rows in a local SQLite database, then produces a daily HTML report with trend review and next-day lifestyle advice. Photos are used only to extract numbers and are not archived. Runs entirely on the local machine.",
   "author": {
     "name": "wangzhanchao",
