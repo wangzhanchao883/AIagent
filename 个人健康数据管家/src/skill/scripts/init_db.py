@@ -29,11 +29,18 @@ def _resolve_health_root() -> Path:
         if _a == "--root" and _i + 1 < len(_argv):
             _v = _argv[_i + 1]
             del _argv[_i:_i + 2]
-            return Path(_v).expanduser().resolve()
+            _p = Path(_v).expanduser().resolve()
+            # 写回环境变量：本脚本会 import 别的脚本（如 _intake_log），
+            # 它们也带同一个解析器；不写回的话 --root 会被第一个消费者吃掉，
+            # 后面那个静默回落到 ~/health-data。
+            _os.environ["HEALTH_ROOT"] = str(_p)
+            return _p
         if _a.startswith("--root="):
             _v = _a.split("=", 1)[1]
             del _argv[_i]
-            return Path(_v).expanduser().resolve()
+            _p = Path(_v).expanduser().resolve()
+            _os.environ["HEALTH_ROOT"] = str(_p)
+            return _p
     _env = _os.environ.get("HEALTH_ROOT")
     if _env:
         return Path(_env).expanduser().resolve()
@@ -166,8 +173,15 @@ CREATE TABLE IF NOT EXISTS meal (
     note             TEXT,
     created_at       TEXT,
     source           TEXT,
-    calcium_mg_low   REAL,
-    calcium_mg_high  REAL
+    -- 2026-11-02 加（D-52）：发酵食物份数 + 具体种类说明。
+    -- 口径见 config.fermented：1 份 = 发酵乳 100 g / 发酵豆制品 30 g /
+    -- 发酵蔬菜 50 g / 味噌 10 g / 康普茶 200 ml，只计「含活菌且未再加热」的。
+    ferment_servings REAL,
+    ferment_desc     TEXT,
+    -- 2026-11-02 加（D-53）：钠区间。此前钠只存在于餐食备注的自由文本里，
+    -- 进不了汇总与趋势；单独成列才能算日均、画图。
+    sodium_mg_low    REAL,
+    sodium_mg_high   REAL
 );
 CREATE INDEX IF NOT EXISTS idx_meal_date ON meal (date);
 
@@ -235,7 +249,10 @@ REQUIRED_COLUMNS = {
     "body_metric": {"source": "TEXT", "photo_path": "TEXT", "note": "TEXT"},
     "waist": {"source": "TEXT", "photo_path": "TEXT"},
     "meal": {"source": "TEXT", "note": "TEXT",
-             "calcium_mg_low": "REAL", "calcium_mg_high": "REAL"},
+             # 2026-11-02（D-52 / D-53）：发酵食物与钠。旧库自动补列，历史行留空。
+             "calcium_mg_low": "REAL", "calcium_mg_high": "REAL",
+             "ferment_servings": "REAL", "ferment_desc": "TEXT",
+             "sodium_mg_low": "REAL", "sodium_mg_high": "REAL"},
     "portion_library": {"source": "TEXT"},
     "daily_review": {"source": "TEXT"},
 }

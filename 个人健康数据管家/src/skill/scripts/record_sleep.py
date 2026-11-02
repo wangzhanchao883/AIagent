@@ -10,7 +10,7 @@ record_sleep.py —— 睡眠录入（手环数据口述 / 补录）
   （端点与 payload 契约未确认）→ 云端拿不到，只能先手工录入。
 
 归属日期口径（与 docs/01-数据规范.md 第三节一致）：
-  **date = 起床日**。即「10-11 夜 → 10-12 晨」的睡眠记为 date=2026-10-12。
+  **date = 起床日**。即「前一夜 → 次日晨」的睡眠记为 date=次日日期。
   与小米运动健康 App 睡眠卡片的日期口径一致，便于逐条核对。
 
 用法：
@@ -22,7 +22,7 @@ record_sleep.py —— 睡眠录入（手环数据口述 / 补录）
         --deep 95 --light 250 --rem 80 --awake 25 --score 82
 
     # 补录到指定归属日
-    python scripts/record_sleep.py --date 2026-10-12 --total-min 435
+    python scripts/record_sleep.py --date 2026-03-01 --total-min 435
 
     # 查看最近记录
     python scripts/record_sleep.py --show
@@ -60,11 +60,18 @@ def _resolve_health_root() -> Path:
         if _a == "--root" and _i + 1 < len(_argv):
             _v = _argv[_i + 1]
             del _argv[_i:_i + 2]
-            return Path(_v).expanduser().resolve()
+            _p = Path(_v).expanduser().resolve()
+            # 写回环境变量：本脚本会 import 别的脚本（如 _intake_log），
+            # 它们也带同一个解析器；不写回的话 --root 会被第一个消费者吃掉，
+            # 后面那个静默回落到 ~/health-data。
+            _os.environ["HEALTH_ROOT"] = str(_p)
+            return _p
         if _a.startswith("--root="):
             _v = _a.split("=", 1)[1]
             del _argv[_i]
-            return Path(_v).expanduser().resolve()
+            _p = Path(_v).expanduser().resolve()
+            _os.environ["HEALTH_ROOT"] = str(_p)
+            return _p
     _env = _os.environ.get("HEALTH_ROOT")
     if _env:
         return Path(_env).expanduser().resolve()

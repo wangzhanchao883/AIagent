@@ -56,11 +56,18 @@ def _resolve_health_root() -> Path:
         if _a == "--root" and _i + 1 < len(_argv):
             _v = _argv[_i + 1]
             del _argv[_i:_i + 2]
-            return Path(_v).expanduser().resolve()
+            _p = Path(_v).expanduser().resolve()
+            # 写回环境变量：本脚本会 import 别的脚本（如 _intake_log），
+            # 它们也带同一个解析器；不写回的话 --root 会被第一个消费者吃掉，
+            # 后面那个静默回落到 ~/health-data。
+            _os.environ["HEALTH_ROOT"] = str(_p)
+            return _p
         if _a.startswith("--root="):
             _v = _a.split("=", 1)[1]
             del _argv[_i]
-            return Path(_v).expanduser().resolve()
+            _p = Path(_v).expanduser().resolve()
+            _os.environ["HEALTH_ROOT"] = str(_p)
+            return _p
     _env = _os.environ.get("HEALTH_ROOT")
     if _env:
         return Path(_env).expanduser().resolve()
@@ -97,6 +104,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--protein", type=float, help="蛋白质点值（自动展开 ±15%%）")
     p.add_argument("--calcium-low", type=float, help="钙下界 mg（2026-10-22 起追踪，见 D-47）")
     p.add_argument("--calcium-high", type=float, help="钙上界 mg")
+    # 2026-11-02 新增（D-52 / D-53）：发酵食物与钠
+    p.add_argument("--ferment", type=float, metavar="份数",
+                   help="发酵食物份数（1 份 = 发酵乳 100g / 发酵豆制品 30g / "
+                        "发酵蔬菜 50g / 味噌 10g / 康普茶 200ml）。只计含活菌且未再加热的")
+    p.add_argument("--ferment-desc", dest="ferment_desc", metavar="说明",
+                   help="发酵食物具体是什么，如「无糖酸奶 200g + 纳豆 30g」")
+    p.add_argument("--sodium-low", type=float, metavar="mg", help="钠下界 mg")
+    p.add_argument("--sodium-high", type=float, metavar="mg", help="钠上界 mg")
     p.add_argument("--veg", type=float, help="蔬菜份数（以「拳」计）")
     p.add_argument("--carb", choices=list(LEVELS), help="碳水档位")
     p.add_argument("--confidence", choices=list(CONF), default="mid", help="估算置信度")
@@ -178,7 +193,8 @@ def bump_library(con: sqlite3.Connection, name: str) -> None:
 def day_summary(con: sqlite3.Connection, d: str) -> None:
     rows = list(con.execute(
         "SELECT meal_type, time, description, place, kcal_low, kcal_high, "
-        "protein_g_low, protein_g_high, veg_servings, carb_level, confidence, note "
+        "protein_g_low, protein_g_high, veg_servings, carb_level, confidence, note, "
+        "ferment_servings, ferment_desc, sodium_mg_low, sodium_mg_high "
         "FROM meal WHERE date = ? ORDER BY time", (d,)
     ))
     if not rows:
@@ -196,34 +212,55 @@ def day_summary(con: sqlite3.Connection, d: str) -> None:
         print(f"          热量 {kcal} | 蛋白 {pr} | 蔬菜 {veg} | "
               f"碳水 {LEVELS.get(r['carb_level'], '—')} | 置信度 {CONF.get(r['confidence'], '—')}"
               + (f" | {r['place']}" if r["place"] else ""))
+        if r["ferment_servings"]:
+            na = (f" | 钠 {r['sodium_mg_low']:g}–{r['sodium_mg_high']:g} mg"
+                  if r["sodium_mg_low"] is not None else "")
+            print(f"          发酵 {r['ferment_servings']:g} 份"
+                  + (f"（{r['ferment_desc']}）" if r["ferment_desc"] else "") + na)
+        elif r["sodium_mg_low"] is not None:
+            print(f"          钠 {r['sodium_mg_low']:g}–{r['sodium_mg_high']:g} mg")
         if r["note"]:
             print(f"          备注 {r['note']}")
 
     s = con.execute(
         "SELECT COUNT(*) n, SUM(kcal_low) kl, SUM(kcal_high) kh, "
-        "SUM(protein_g_low) pl, SUM(protein_g_high) ph, SUM(veg_servings) v "
+        "SUM(protein_g_low) pl, SUM(protein_g_high) ph, SUM(veg_servings) v, "
+        "SUM(calcium_mg_low) cal, SUM(calcium_mg_high) cah, "
+        "SUM(ferment_servings) fm, SUM(sodium_mg_low) nal, SUM(sodium_mg_high) nah "
         "FROM meal WHERE date = ?", (d,)
     ).fetchone()
     print()
     print(f"  合计：{s['n']} 餐 | 热量 {s['kl'] or 0}–{s['kh'] or 0} kcal "
           f"| 蛋白 {s['pl'] or 0:g}–{s['ph'] or 0:g} g | 蔬菜 {s['v'] or 0:g} 拳")
+    _extra = []
+    if s["fm"]:
+        _extra.append(f"发酵 {s['fm']:g} 份")
+    if s["cal"]:
+        _extra.append(f"钙 {s['cal']:g}–{s['cah']:g} mg")
+    if s["nal"]:
+        _extra.append(f"钠 {s['nal']:g}–{s['nah']:g} mg")
+    if _extra:
+        print("        " + " | ".join(_extra))
 
 
 def show_recent(con: sqlite3.Connection) -> None:
     print("=== 最近 7 天饮食汇总 ===")
     rows = list(con.execute(
         "SELECT date, COUNT(*) n, SUM(kcal_low) kl, SUM(kcal_high) kh, "
-        "SUM(protein_g_low) pl, SUM(protein_g_high) ph, SUM(veg_servings) v "
+        "SUM(protein_g_low) pl, SUM(protein_g_high) ph, SUM(veg_servings) v, "
+        "SUM(ferment_servings) fm "
         "FROM meal GROUP BY date ORDER BY date DESC LIMIT 7"
     ))
     if not rows:
         print("  （暂无记录）")
     else:
-        print(f"  {'日期':<12}{'餐数':>5}{'热量区间(kcal)':>20}{'蛋白(g)':>14}{'蔬菜(拳)':>9}")
+        print(f"  {'日期':<12}{'餐数':>5}{'热量区间(kcal)':>20}{'蛋白(g)':>14}"
+              f"{'蔬菜(拳)':>9}{'发酵(份)':>9}")
         for r in rows:
             kcal = f"{r['kl'] or 0}–{r['kh'] or 0}"
             prot = f"{r['pl'] or 0:g}–{r['ph'] or 0:g}"
-            print(f"  {r['date']:<12}{r['n']:>5}{kcal:>20}{prot:>14}{r['v'] or 0:>9g}")
+            print(f"  {r['date']:<12}{r['n']:>5}{kcal:>20}{prot:>14}"
+                  f"{r['v'] or 0:>9g}{r['fm'] or 0:>9g}")
     print()
     print("=== 个人份量库（越用越准）===")
     lib = list(con.execute(
@@ -294,13 +331,15 @@ def main() -> int:
         INSERT INTO meal (date, time, meal_type, photo_path, description, place,
                           kcal_low, kcal_high, protein_g_low, protein_g_high,
                           veg_servings, carb_level, confidence, verified_by_user,
-                          note, created_at, source, calcium_mg_low, calcium_mg_high)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                          note, created_at, source, calcium_mg_low, calcium_mg_high,
+                          ferment_servings, ferment_desc, sodium_mg_low, sodium_mg_high)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """,
         (d, t, mt, None, a.desc, a.place, kl, kh, pl, ph,
          a.veg, a.carb, a.confidence, 0, note,
          datetime.now().isoformat(timespec="seconds"), "photo",
-         a.calcium_low, a.calcium_high),
+         a.calcium_low, a.calcium_high,
+         a.ferment, a.ferment_desc, a.sodium_low, a.sodium_high),
     )
 
     if lib_name:
@@ -332,6 +371,13 @@ def main() -> int:
         print(f"   蔬菜 {a.veg:g} 拳")
     if a.calcium_low is not None:
         print(f"   钙 {a.calcium_low:g}–{a.calcium_high:g} mg（参考 800 mg/天）")
+    if a.ferment:
+        print(f"   发酵食物 {a.ferment:g} 份"
+              + (f"（{a.ferment_desc}）" if a.ferment_desc else "")
+              + f"　当日目标 {GOALS.get('ferment_servings_target', 2)} 份")
+    if a.sodium_low is not None:
+        print(f"   钠 {a.sodium_low:g}–{a.sodium_high or a.sodium_low:g} mg"
+              f"（上限 {GOALS.get('sodium_mg', 2000)} mg/天）")
     if a.carb:
         print(f"   碳水档位 {LEVELS.get(a.carb, a.carb)}")
     if a.save_to_library:
@@ -344,12 +390,15 @@ def main() -> int:
     s = con.execute(
         "SELECT COUNT(*) n, SUM(kcal_low) kl, SUM(kcal_high) kh, "
         "SUM(protein_g_low) pl, SUM(protein_g_high) ph, SUM(veg_servings) v, "
-        "SUM(calcium_mg_low) cal, SUM(calcium_mg_high) cah "
+        "SUM(calcium_mg_low) cal, SUM(calcium_mg_high) cah, "
+        "SUM(ferment_servings) fm, SUM(sodium_mg_low) nal, SUM(sodium_mg_high) nah "
         "FROM meal WHERE date = ?", (d,)
     ).fetchone()
     print(f"   {s['n']} 餐 | 热量 {s['kl'] or 0}–{s['kh'] or 0} kcal | "
           f"蛋白 {s['pl'] or 0:g}–{s['ph'] or 0:g} g | 蔬菜 {s['v'] or 0:g} 拳"
-          + (f" | 钙 {s['cal']:g}–{s['cah']:g} mg" if s['cal'] else ""))
+          + (f" | 钙 {s['cal']:g}–{s['cah']:g} mg" if s['cal'] else "")
+          + (f" | 发酵 {s['fm']:g} 份" if s['fm'] else "")
+          + (f" | 钠 {s['nal']:g}–{s['nah']:g} mg" if s['nal'] else ""))
 
     con.close()
     return 0

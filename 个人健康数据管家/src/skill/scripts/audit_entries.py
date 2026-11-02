@@ -59,11 +59,18 @@ def _resolve_health_root() -> Path:
         if _a == "--root" and _i + 1 < len(_argv):
             _v = _argv[_i + 1]
             del _argv[_i:_i + 2]
-            return Path(_v).expanduser().resolve()
+            _p = Path(_v).expanduser().resolve()
+            # 写回环境变量：本脚本会 import 别的脚本（如 _intake_log），
+            # 它们也带同一个解析器；不写回的话 --root 会被第一个消费者吃掉，
+            # 后面那个静默回落到 ~/health-data。
+            _os.environ["HEALTH_ROOT"] = str(_p)
+            return _p
         if _a.startswith("--root="):
             _v = _a.split("=", 1)[1]
             del _argv[_i]
-            return Path(_v).expanduser().resolve()
+            _p = Path(_v).expanduser().resolve()
+            _os.environ["HEALTH_ROOT"] = str(_p)
+            return _p
     _env = _os.environ.get("HEALTH_ROOT")
     if _env:
         return Path(_env).expanduser().resolve()

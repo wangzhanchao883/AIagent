@@ -14,8 +14,9 @@ record_body.py —— 体重 / 体脂 / 腰围 录入
   - 需要保留时加 --keep-photo。
 
 用法：
-    # 拍秤面照片录入（从对话附件读图，不传 --photo；默认斤，自动换算成 kg 存库）
-    python scripts/record_body.py --weight 144.6 --blob-id <sha256>
+    # 拍秤面照片录入（从对话附件读图，不传 --photo；单位按 config 的 weight_unit，
+    # 默认 kg，报斤时加 --unit jin 自动换算成 kg 存库）
+    python scripts/record_body.py --weight 72.3 --blob-id <sha256>
 
     # 顺带录腰围（cm）
     python scripts/record_body.py --weight 144.6 --waist 88.5
@@ -61,11 +62,18 @@ def _resolve_health_root() -> Path:
         if _a == "--root" and _i + 1 < len(_argv):
             _v = _argv[_i + 1]
             del _argv[_i:_i + 2]
-            return Path(_v).expanduser().resolve()
+            _p = Path(_v).expanduser().resolve()
+            # 写回环境变量：本脚本会 import 别的脚本（如 _intake_log），
+            # 它们也带同一个解析器；不写回的话 --root 会被第一个消费者吃掉，
+            # 后面那个静默回落到 ~/health-data。
+            _os.environ["HEALTH_ROOT"] = str(_p)
+            return _p
         if _a.startswith("--root="):
             _v = _a.split("=", 1)[1]
             del _argv[_i]
-            return Path(_v).expanduser().resolve()
+            _p = Path(_v).expanduser().resolve()
+            _os.environ["HEALTH_ROOT"] = str(_p)
+            return _p
     _env = _os.environ.get("HEALTH_ROOT")
     if _env:
         return Path(_env).expanduser().resolve()
@@ -108,7 +116,7 @@ def fmt_weight(kg: float, unit: str) -> str:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="体重/体脂/腰围录入（输入单位按 config 的 weight_unit，默认斤）",
+        description="体重/体脂/腰围录入（输入单位按 config 的 weight_unit，默认 kg）",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("--date", help="YYYY-MM-DD，默认今天")

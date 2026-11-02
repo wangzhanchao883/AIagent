@@ -195,14 +195,12 @@ def step_config(root: Path, args) -> Path:
     if fist:
         repl["fist_width_cm: 9.0"] = f"fist_width_cm: {float(fist):g}"
     if target:
-        # --target-weight 的输入单位与 weight_unit 一致，但库里一律存 kg，这里必须换算
-        u = unit or "jin"            # 模板默认 weight_unit: jin
-        t_kg = float(target) * 0.5 if u == "jin" else float(target)
-        repl["weight_kg: 70.0"] = f"weight_kg: {t_kg:g}"
-        repl["goal_kg: 70.0"] = f"goal_kg: {t_kg:g}"
+        # 模板里的目标体重单位与 weight_unit 一致（report 里按同单位显示）
+        repl["weight_kg: 70.0"] = f"weight_kg: {float(target):g}"
+        repl["goal_kg: 70.0"] = f"goal_kg: {float(target):g}"
     elif height:
-        # 没给目标体重时，按 BMI 22.5 反推一个起点（kg）
-        t = round(22.5 * (float(height) / 100) ** 2, 1)
+        # 没给目标体重时，按 BMI 22.5 反推一个起点，用户后续可改
+        t = round(22.5 * float(height) / 10) / 10
         repl["weight_kg: 70.0"] = f"weight_kg: {t:g}"
         repl["goal_kg: 70.0"] = f"goal_kg: {t:g}"
 

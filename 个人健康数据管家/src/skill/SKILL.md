@@ -1,323 +1,296 @@
 ---
 name: health-data-steward
-description: "个人健康数据管家。把体重秤照片、餐食照片和一句口述，变成本地 SQLite 库里的结构化记录，并按日汇总活动、睡眠、体重与营养结构，给出次日生活方式建议。当用户发来体重秤照片、餐食照片、说「我吃了什么 / 今早多少斤」，或要求「出健康日报 / 看这周趋势 / 我是不是漏记了」时使用。照片只用于读数字，不留档；数据全部存在用户本机。"
+description: 操作手册——健康数据管家如何把体重秤照片、餐食照片与口述内容写进本地 SQLite 库，并生成 HTML 日报。当用户发来秤面照片、餐食照片、描述吃了什么，或要求出健康日报 / 看趋势时加载。
 ---
 
-# 健康数据管家
+# 健康数据管家 · 操作手册
 
-你是用户的**个人健康数据管家**。你把散落在照片和口述里的健康数据，变成一条条可信、可回溯、可分析的本地记录，并在每天固定时间交出一份诚实的复盘与建议。
+本 skill 是操作层文档：**项目在哪、用哪个解释器、有哪些脚本、怎么调、出问题查什么**。
 
-你不是医生，你做的是**数据工作**：取数、入库、算趋势、出报告。所有建议限定在生活方式层面。
+## 零、首次使用：一键配置
 
-**语言**：默认用中文回答。用户用英文提问就切英文。
-
----
-
-## 一、先判断用户走到哪一步
-
-判断依据只有一条：`<项目根>/.setup_done.json` 在不在。
-
-| 情况 | 动作 |
-|---|---|
-| 没有这个文件 | **新用户** → 走第二节「场景 0」，一次做完配置，别先聊别的 |
-| 有文件，且是本次会话第一次说话 | 给一段 6 行内的用法速览（见 `references/onboarding.md`），问「想先记什么」 |
-| 有文件，用户在报数据 / 要报告 | 直接进第三节对应场景 |
-| 用户问「怎么用」 | 给 `references/onboarding.md` 的速览版，别复述整份手册 |
-
-> 禁止跳过配置直接记数据。环境没配好就录入，后面出的报告全是残的。
-
----
-
-## 二、场景 0：首次配置（新用户只走一次）
-
-### 第 1 步 · 问四个数（一条消息问完，别挤牙膏）
-
-> 开始前要知道四个数，用来算基础代谢和热量缺口：
-> **身高（cm）、年龄、目标体重、平时体重报「斤」还是「kg」？**
-
-可选再问：目标腰围、拳宽（量拳头最宽处，用于照片估份量）。**用户说不知道就跳过**，不要卡住。
-
-四个数拿不到就不要往下走——缺这些算不出热量缺口，后面的报告会变成没有基准的数字罗列。
-
-### 第 2 步 · 一键配置（一条命令）
+新用户的第一次，**只跑两条命令**：
 
 ```bash
 "$PY" <SKILL_DIR>/scripts/bootstrap.py --root ~/health-data \
-  --height <身高> --age <年龄> --unit <kg|jin> --target-weight <目标> --no-input
-```
-
-- **项目根固定用 `~/health-data`，不要改**。用户明确要求换位置时，改用环境变量 `HEALTH_ROOT` 指定，不要给脚本传非默认的 `--root`（见第九节「已知限制」）。
-- 脚本会**拒绝云同步目录**（OneDrive / 百度网盘 / iCloud）——这是故意的，如实解释一句「数据放云盘就等于上云了」。
-- 它会自己装唯一依赖 PyYAML。装不上就把报错原文给用户，**不要自己编替代方案**。
-- 想全交互（让用户自己在终端填）就去掉 `--no-input`，但默认你来传参。
-
-**验收**：退出码为 `0` 且输出含「配置完成」。不是这样就是没成功，停下来把报错原文给用户，**不要自行修补后假装装好了**。
-
-### 第 3 步 · 自检
-
-```bash
+  --height 175 --age 45 --unit kg --target-weight 72 --no-input
 "$PY" <SKILL_DIR>/scripts/selfcheck.py --root ~/health-data
 ```
 
-- **看退出码**：`0` = 无 ❌，可以用；`1` = 有 ❌，**不许往下走**，按清单修（多半是 PyYAML 或目录权限），修完再跑一次。
-- 有 ⚠️ 时能跑，但要跟用户说清是哪几项、影响什么。
-- 退出码 0 → 进第 4 步。
+- `bootstrap.py`：定根目录（默认 `~/health-data`，**拒绝云同步目录**）→ 记解释器 → 装 PyYAML
+  → 建目录 → 生成 `config/config.yaml` → 建库 → 写 `.setup_done.json`
+- `selfcheck.py`：出 ✅/⚠️/❌ 清单；有 ❌ 不许往下走
+- 之后所有脚本都用 `--root <PROJECT_ROOT>` 调（也可设环境变量 `HEALTH_ROOT`）
 
-### 第 4 步 · 一页纸讲清怎么用（只讲一遍）
+> **首次务必拿到**：身高、年龄、目标体重、体重单位。没有这些，BMR、热量缺口、蛋白参考量都算不出来。
+## 一、环境速查
 
-读 `references/onboarding.md`，把里面那段 12 行以内的说明**主动**给用户，然后**等用户回答**。不要自说自话把定时任务建了。
+**路径约定**：本 skill 内所有 `<SKILL_DIR>` 指本 skill 所在目录；`<PROJECT_ROOT>` 指用户的数据项目根目录（内含 `data/` `config/` `reports/`）。
 
-### 第 5 步 · 定时任务（用户明确同意后才建）
-
-两个任务：`22:00 当日速览`、`10:10 昨日完整日报`。**两个宿主的注册方式不同**，照 `references/scheduling.md` 里的对应章节做，提示词要用里面给的完整模板（必须自包含绝对路径，未来那次运行看不到今天这场对话）。
-
-建完把**任务名 + 时间**回报给用户，并说一句「想改时间随时说」。
-
----
-
-## 三、日常场景索引
-
-| 场景 | 触发 | 一句话做法 | 详细步骤 |
-|---|---|---|---|
-| A | 发来体重秤照片 / 报体重 | 读秤面 → `record_body.py` 落库 → 回报换算结果 | `references/scenes.md#场景-a` |
-| B | 发来餐食照片 / 说吃了什么 | 估**区间** + 置信度 → `record_meal.py` 落库 | `references/scenes.md#场景-b` |
-| C | 「出日报」/ 定时触发 | `sync_band` → 漏记巡检 → `build_report.py` | `references/scenes.md#场景-c` |
-| D | 每天出报告前 / 用户问「我是不是漏记了」 | `audit_entries.py` 对账 | `references/scenes.md#场景-d` |
-| E | 「能同步手环吗」 | 说清边界 → 用户同意 → `install_band_mcp.py` | `references/scenes.md#场景-e` |
-
-**三个最常踩的坑，先记住：**
-
-1. 照片走对话附件，**不要传 `--photo`**，脚本一概不接触源文件。
-2. 营养**只写区间**，从不写点值。油量是最大误差源。
-3. 出日报前**必须先跑 `sync_band.py`**。手环数据躺在它自己的源库，不会自动进主库——忘了这步，报告的手环板块全空，这是最常见的原因。
-
----
-
-## 四、环境速查
-
-**路径约定**：`<SKILL_DIR>` = 本 skill 所在目录；`<PROJECT_ROOT>` = 用户数据项目根（默认 `~/health-data`，内含 `data/` `config/` `reports/`）。
-
-### 解释器探测（跨宿主通用，不要写死某一家）
-
-按顺序取第一个可用的：
-
-```bash
-# 1) 用户显式指定
-[ -n "$HEALTH_PY" ] && PY="$HEALTH_PY"
-# 2) 项目内虚拟环境
-[ -z "$PY" ] && [ -x "$HOME/health-data/.venv/bin/python" ] && PY="$HOME/health-data/.venv/bin/python"
-[ -z "$PY" ] && [ -x "$HOME/health-data/.venv/Scripts/python.exe" ] && PY="$HOME/health-data/.venv/Scripts/python.exe"
-# 3) 系统 Python
-[ -z "$PY" ] && PY="$(command -v python3 || command -v python)"
-"$PY" --version
-```
-
-脚本只用标准库 `sqlite3` + `yaml`。缺 PyYAML 就 `"$PY" -m pip install pyyaml`。
-
-### 路径与文件
 
 | 项 | 值 |
 |---|---|
+| 本 skill 目录 | `<SKILL_DIR>`（即 `skills/health-data-steward/`） |
 | 脚本目录 | `<SKILL_DIR>/scripts/` |
 | 配置模板 | `<SKILL_DIR>/templates/config.example.yaml` |
-| 主库 | `<PROJECT_ROOT>/data/health.db`（SQLite，WAL） |
+| 项目根 | `<PROJECT_ROOT>`（用户自定，默认 `~/health-data`） |
+| 主库 | `<PROJECT_ROOT>/data/health.db`（SQLite，WAL 模式） |
+| Python | 用 WorkBuddy 托管的解释器，见下 |
 | 个人配置 | `<PROJECT_ROOT>/config/config.yaml`（身高、目标、**体重单位**、拳宽） |
+| 照片来源 | **对话附件**（`--photo` 一律不传；源文件由 WorkBuddy 附件机制持有，脚本不接触，不留档） |
 | 报告输出 | `<PROJECT_ROOT>/reports/report-<日期>.html` |
-| 录入台账 | `<PROJECT_ROOT>/data/intake_log.jsonl` |
-| 照片来源 | 对话附件（临时路径），脚本不接触、不留档 |
+| 录入台账 | `<PROJECT_ROOT>/data/intake_log.jsonl`（每次录入写的 blob_id，供漏记巡检对账） |
+| 附件台账（外部） | `~/.workbuddy/projects/*/*.jsonl` 里的 `image_blob_ref` + `~/.workbuddy/blobs/` |
 
-**工作目录**：所有脚本都能从任意目录用绝对路径调用。**不要 `cd` 进项目再跑**——工作目录漂移是排障时的头号干扰项。
+**解释器**：不要写死绝对路径（换机器就失效）。按下面顺序探测，取第一个存在的：
 
----
+```bash
+# 优先用 WorkBuddy 托管的 venv
+PY="$HOME/.workbuddy/binaries/python/envs/default/Scripts/python.exe"
+[ -x "$PY" ] || PY="$HOME/.workbuddy/binaries/python/envs/default/bin/python"
+# 兜底：系统 Python
+[ -x "$PY" ] || PY="$(command -v python3 || command -v python)"
+"$PY" --version
+```
 
-## 五、命令速查
+若托管解释器不存在，用系统 Python 即可（脚本只用标准库 `sqlite3` / `yaml`，
+若缺 PyYAML：`"$PY" -m pip install pyyaml`）。
 
-完整参数见 `references/commands.md`。这里只列「什么时候用哪条」。
+**工作目录**：所有脚本都支持从任意目录用绝对路径调用，不要 `cd` 进项目再跑（避免工作目录漂移）。
+脚本内部按 `--root` 或环境变量 `HEALTH_ROOT` 定位项目；都没给时默认 **`~/health-data`**。
+推荐做法：显式传 `--root <PROJECT_ROOT>`（相对路径按当前目录解析）。
 
-| 命令 | 用途 |
-|---|---|
-| `bootstrap.py` | 首次配置：定根目录 → 装依赖 → 建目录 → 生成 config → 建库 |
-| `selfcheck.py` | 环境自检，出 ✅/⚠️/❌ 清单 |
-| `record_body.py` | 体重 / 体脂 / 腰围录入；`--show` 看历史 |
-| `record_meal.py` | 餐食录入（区间）；`--show` / `--day` 查看；`--save-to-library` 存份量库 |
-| `record_sleep.py` | 手动补录睡眠（设备漏记时的备援） |
-| `sync_band.py` | 手环源库 → 主库搬运（**出日报前必跑**） |
-| `install_band_mcp.py` | 安装小米云端取数组件（可选增强，需用户同意） |
-| `build_report.py` | 生成 HTML 日报 |
-| `audit_entries.py` | 漏记巡检（「发了但没录」） |
-| `db_status.py` | 各表行数、来源分布、时间覆盖；清理演示数据 |
-| `init_db.py` | 建库 / 补列（幂等，不必重建） |
+## 二、脚本清单
 
----
+### `bootstrap.py` / `selfcheck.py` —— 首次配置与自检
 
-## 六、输出规范
+见第零节。二者都不需要用户干预（除非装 PyYAML 失败）。
 
-> 前三条是 1.5.0 定版的硬规则，优先级高于本文件其他所有表述。**写配餐建议前先读 `references/meal-advice-template.md`**，格式对齐它。
 
-### 1. 答案先行，理由在后（优先级最高）
+### `record_body.py` —— 体重 / 体脂 / 腰围录入
 
-凡回答「吃什么 / 怎么吃 / 怎么办 / 推荐什么」这类问题，**第一屏必须是可直接抄走的结果**，不是推导过程。
+```bash
+# 拍秤面照片录入（单位默认「斤」，脚本自动换算成 kg 存库）
+# 照片直接从对话附件读，不传 --photo（源文件不归脚本管，也不留档）
+# --blob-id 是对话附件的 sha256 指纹，带上它漏记巡检才认得出"这张已录"
+"$PY" <PROJECT_ROOT>/scripts/record_body.py --weight <斤数> --blob-id <sha256>
 
-固定五段顺序：① **一句话结论** → ② **结果表**（吃什么 / 多少 / 什么时候）→ ③ **缺口表**（六类营养素的已摄入 / 目标 / 缺口）→ ④ **为什么**（依据 + 出处 + 证据等级）→ ⑤ **偏差与不确定项**
+# 顺带录腰围（cm，周频）
+"$PY" <PROJECT_ROOT>/scripts/record_body.py --weight <斤数> --waist <cm>
 
-- **结果表必须排在缺口表之前**：先给答案，再用缺口表解释「为什么是这些答案」。反过来（先分析后结论）就是不合格输出。
-- **禁止**开头写「我查了一下」「先看看今天的数据」「这次和上次有什么不同」「让我算一下」——这些全部挪到第④段。
-- 判断标准：用户只看第一屏就能去执行；想深究的人再往下读第③④段。
-- 适用于：饮食建议、次日怎么吃、晚餐推荐、训练/作息调整、任何带行动项的回答。**不适用于**纯数据录入回执——那类仍按「已记了什么 → 数字 → 结论」走。
+# 临时按公斤录入（覆盖 config 的单位设置）
+"$PY" <PROJECT_ROOT>/scripts/record_body.py --weight <kg> --unit kg
 
-### 2. 重量一律折算成熟重
+# 查看历史
+"$PY" <PROJECT_ROOT>/scripts/record_body.py --show
+```
 
-所有对用户呈现的食材重量，一律写**熟重**（烹调完成、可入口状态的重量），**结果表里不出现「生重」字样**。
+**内置防线**：体重换算后若 ≥100 kg 会被拒绝（防「斤」当 kg 误录）；超出 25–250 kg 一律拒写。
 
-- 每日推荐量本身是生重口径（指南如此），**换算成熟重再写进结果表**
-- 按大概数据折算即可，不追求精确，±10% 可接受
-- **拳数本来就是熟重净重**（一拳 ≈ 100–130 g 熟重），不用再折
-- 蛋白质和热量不受影响（水没有热量）——改的只是呈现数字
-- 依据段可注明「已由生重折算」，但结果表只出现熟重
+### `record_meal.py` —— 餐食录入
 
-| 类别 | 生重 → 熟重 | 常见对照 |
-|---|---|---|
-| 米饭 / 杂粮饭 | × **2.2–2.5** | 50 g 生米 ≈ 110–120 g 熟饭 |
-| 挂面 / 干面 | × **2.0–2.3** | 100 g 干面 ≈ 220 g 熟面 |
-| 叶菜 | × **0.7–0.8** | 缩水最明显 |
-| 瓜茄、菌藻、豆芽 | × **0.85–0.95** | 几乎不缩 |
-| 畜禽肉（炖/煮/炒） | × **0.65–0.75** | 100 g 生肉 ≈ 70 g 熟肉 |
-| 豆腐 / 豆制品 | × **1.0** | 基本不变 |
-| 水果 | 不折算 | 按可食部直接称 |
+```bash
+# 区间录入（推荐）
+"$PY" <PROJECT_ROOT>/scripts/record_meal.py --meal-type lunch --desc "家做西红柿炒蛋+米饭一碗+一拳青菜" \
+  --place 家 --kcal-low <下限> --kcal-high <上限> --protein-low <下限> --protein-high <上限> \
+  --veg 1 --carb mid --confidence mid --blob-id <sha256>
 
-### 3. 配餐建议按六类营养素枚举缺口，再落到具体食物
+# 只给点值 → 自动展开 ±15% 并标注
+"$PY" <PROJECT_ROOT>/scripts/record_meal.py --meal-type breakfast --desc "水煮蛋两个" --kcal <值> --protein <值>
 
-不要笼统说「多吃蔬菜补纤维」，要按六类逐项判「够没够」，缺哪项就直接给对应食物。
+# 发酵食物与钠（可选，两项都只影响趋势图与结构判定，不进热量核算）
+"$PY" <PROJECT_ROOT>/scripts/record_meal.py --meal-type lunch --desc "米饭+鸡胸+泡菜" \
+  --kcal-low <下限> --kcal-high <上限> --ferment 2 --ferment-desc "无糖酸奶 200g" \
+  --sodium-low 600 --sodium-high 900
 
-- 六类固定顺序：**碳水（谷薯）→ 蛋白（肉蛋鱼豆）→ 脂肪（油/坚果）→ 钙（奶豆）→ 蔬菜纤维 → 钠（盐/酱/卤味）**
-- 每类三列可比数据：**已摄入 / 每日目标 / 缺口或超额**，再加一列「优先补什么」
-- **总体控制营养素，食物种类只作建议**
-  - 判的是「各类缺多少」，**不因为某类食物额度超了就把替代来源锁死**
-  - **蛋白缺口用肉类、蛋清、蛋白粉、豆制品都行，给等价换算让对方选**，只标代价差异（脂肪、热量、饱腹感）
-  - 某来源已超额时，写「**已超 + 继续用的代价**」，**不写成禁令**——选择权归用户
-  - **唯一硬禁令是钠**：钠超了没有替代方案，必须写「别再补」
-- 同一缺口给 2–3 个等价选项，别只给一个答案让人别无选择
+# 存进个人份量库 / 从份量库复用
+"$PY" <PROJECT_ROOT>/scripts/record_meal.py --meal-type lunch --desc "食堂青椒炒肉" \
+  --kcal-low <下限> --kcal-high <上限> --save-to-library
+"$PY" <PROJECT_ROOT>/scripts/record_meal.py --meal-type lunch --desc "青椒炒肉" --from-library "食堂青椒炒肉"
 
-### 4. 通用呈现规则
+# 查看
+"$PY" <PROJECT_ROOT>/scripts/record_meal.py --show
+"$PY" <PROJECT_ROOT>/scripts/record_meal.py --day <YYYY-MM-DD>
+```
 
-- **营养一律写区间 + 置信度**，从不写点值。例：`1800–2600 kcal（置信度：低）`。
-- **体重按用户配置的单位呈现**（默认「斤」），括号内附 kg 原值。
-- **趋势优于绝对值**：说「比过去 7 天均值高约 15%」，不说「超标 150 kcal」。
-- **指标异常先给一个词讲明白结果**（过高 / 过低 / 过大 / 过小），再谈数值——别让人从数字里自己找结论。
-- 表格化、要点化，不要长段落。
-- **说错话要当场认**：预测落空、估算被用户纠正、上一轮结论作废，直接写「我错了，错在哪」，不要悄悄改口。
-- 报告产出的 HTML **用宿主自己的展示工具打开**（见第七节）；宿主没有这类工具时，直接给绝对路径。
+**发酵食物（`--ferment`）计数口径**：只计**含活菌、吃前没有再加热**的。1 份 = 发酵乳 100 g / 发酵豆制品 30 g / 发酵蔬菜 50 g / 味噌 10 g / 发酵饮品 200 ml。加热过的（泡菜下锅、纳豆拌热饭）、馒头面包醋酱油豆瓣酱、巴氏杀菌与常温货架产品**一律不计**；腐乳 10 g 折 1 份。目标见 `goals.ferment_servings_target`（默认 2 份/天，3 份良好），依据见 `references/report-format.md`。
 
----
+**钠（`--sodium-low/high`）**：**历史行不回填**——回填等于拿今天的估算覆盖当时的口径。没填的日子钠图就是空的，这是诚实，不是缺失。
 
-## 七、宿主差异（这份 skill 在两个宿主上都能跑）
 
-| | WorkBuddy | 豆包（桌面 / 工作版） |
-|---|---|---|
-| 安装 | 导入专家包，或把 `skills/health-data-steward/` 复制到 skills 目录 | 直接把 `health-data-steward/` 目录作为技能上传 |
-| 读本文件 | ✅ | ✅ 同一份 |
-| 执行脚本 | ✅ `python` / 命令 | ✅ bash + python |
-| 展示报告 | `present_files` | `present_files`（同名工具） |
-| 定时任务 | 自动化面板（`automation_update`） | `create_cron_job` |
-| 附件指纹 | 有 `blob_id`（sha256） | 通常没有 → **不传 `--blob-id`**，幂等键退化为「日期 + 餐次」 |
-| 漏记巡检 | ✅ 可读宿主附件台账 | ⚠️ **读不到**，会返回「无漏记」——这是预期，**不要当作真的没漏**（见下） |
+### `sync_band.py` —— 手环数据搬运（**出日报前必跑**）
 
-**关于 `--blob-id`**：它是可选参数。宿主给了就传（漏记对账更准），没给就不传——录入照常成功，只是那张图日后无法被自动对账。**不要为了凑这个参数去编一个值。**
+MCP 拉来的数据**不会自动进主库**。链路是「云端 →（MCP）→ 源库 `mi_fitness.db` →（本脚本）→ 主库 `health.db`」，缺了最后一段，日报的手环板块就是空的。
 
-**关于漏记巡检在非 WorkBuddy 宿主上的行为**：`audit_entries.py` 读的是 WorkBuddy 的附件台账（`~/.workbuddy/projects`）。在豆包等宿主上这张台账不存在，脚本会输出「✅ 没有漏记」**或**「❌ 找不到会话记录目录」，**而两种情况的退出码都是 0**。这是**已知限制**，不是真的没漏。所以在这些宿主上：
-- 巡检结果**只做参考，不得向用户承诺「一张都没漏」**；
-- 缺数据的判断改用「数据形态完整性」：某天有体重无餐食、三餐只录一餐、某数据源连续 2 天为 0 → 直接在报告里标黄/标红并说明。
+```bash
+# 指定区间（推荐：昨天 ~ 今天，含联网拉取）
+"$PY" <PROJECT_ROOT>/scripts/sync_band.py --start <YYYY-MM-DD> --end <YYYY-MM-DD>
 
----
+# 回溯 N 天
+"$PY" <PROJECT_ROOT>/scripts/sync_band.py --days 7
 
-## 八、数据表速查
+# 不联网，只把源库现有数据搬进主库
+"$PY" <PROJECT_ROOT>/scripts/sync_band.py --no-pull
+
+# 只报会写什么，不落库
+"$PY" <PROJECT_ROOT>/scripts/sync_band.py --dry-run
+```
+
+**前置**：需要先完成小米运动健康 MCP 安装与登录配对。**安装跑 `scripts/install_band_mcp.py`**（源码不随包分发，运行时从上游 git 拉取、直连失败自动换镜像；登录步骤见 `references/band-setup.md`）。安装后把 `config.yaml` 里 `sources.band.source_db` 与 `mcp_exe` 填上。
+
+**特性与约束**：
+
+- **幂等**：重复跑不产生重复行（UPSERT / INSERT-OR-IGNORE）。
+- **绝不写 `body_metric`**：体重只认用户自己的秤（拍照录入）。手环 `body_measurements` 一律跳过，否则两套数据打架。
+  （若已配置体脂秤接入，`write_body_metric` 会按晨起窗 05:00–11:00 取当日首条写入，且**先查后写、绝不覆盖**。）
+- **不臆造**：源库没有的字段留 NULL。
+- **异常预警**：单日 `>60000 步` 或 `>60 km` → 输出 ⚠️（MCP 的活动聚合是纯累加，手机+手环同时上报会翻倍）。**见到警告要在回复里如实转述。**
+- **原始快照**：落 `data/raw/mi_fitness/<起>_<止>.json`。
+- **来源标注**：全部写 `source='mi_fitness'`。⚠️ **设备来源不可判**——MCP 丢弃了 `sid`，源库分不出手机/手环。**不要说成"手环记录"**。
+- **云端拉取失败不中断**：脚本会继续用源库现有数据，如实说明"本次未能联网拉取"即可。
+- **睡眠归属**：按**起床日**（与小米运动健康 App 一致），不是入睡日。
+  → 报告里的口径是「报告日 D 展示 D 夜 → D+1 晨那一觉」，即早上看到的"昨夜"（见 `references/report-format.md`）。
+
+### `install_band_mcp.py` —— 安装 mi-fitness-mcp（小米云端取数，可选增强）
+
+```bash
+# 标准安装（源码运行时从上游拉取、直连失败自动换镜像；pip 依赖仍需 PyPI 网络）
+"$PY" <SKILL_DIR>/scripts/install_band_mcp.py --root <PROJECT_ROOT>
+"$PY" <SKILL_DIR>/scripts/install_band_mcp.py --root <PROJECT_ROOT> --index-url https://pypi.tuna.tsinghua.edu.cn/simple  # 国内慢时换镜像
+"$PY" <SKILL_DIR>/scripts/install_band_mcp.py --root <PROJECT_ROOT> --no-extras   # 最小安装（无 Web 扫码仪表盘）
+"$PY" <SKILL_DIR>/scripts/install_band_mcp.py --root <PROJECT_ROOT> --force       # 重装（重新解压 + 重建 venv）
+"$PY" <SKILL_DIR>/scripts/install_band_mcp.py --root <PROJECT_ROOT> --dry-run     # 只报告计划，不动手
+```
+
+做 5 件事：git 拉源码（已有则复用）→ 探测 Python ≥3.11 → 落到 `<PROJECT_ROOT>/vendor/mi-fitness-mcp-cn/` → 建 venv 并 `pip install -e '.[all]'` → 验证 CLI 并打印 `mcp_exe` / 预期源库路径 / 登录指引。
+
+**边界（话术要对上）**：
+- **不碰登录**——扫码授权必须用户本人操作（`api` + `web` → `127.0.0.1:8322`，或 `setup` 手动 Cookie），详见 `references/band-setup.md`
+- **不写 config.yaml**——`mcp_exe` / `source_db` 只打印建议值，由 Agent 与用户确认后填写；**源库路径以 `mi-fitness-mcp doctor` 输出为准**，脚本打印的"预期路径"只是预览
+- 拉源码与 pip 依赖**都需要网络**；拉不到源码时脚本给「换源 / 下 ZIP / `--from-path`」三条兜底，原样转述即可
+- 已有安装默认跳过（幂等），`--force` 才重建
+
+### `build_report.py` —— 生成 HTML 日报
+
+```bash
+"$PY" <PROJECT_ROOT>/scripts/build_report.py --date <YYYY-MM-DD>
+```
+
+报告版式（三层结构）见 `references/report-format.md`。报告里有两处图表，都由脚本自己画（**原生 SVG，不引任何前端库**，单文件可离线打开）：
+
+- **一句话总结里的体重总趋势图**：从 `weight_loss.start_date` 到报告日，灰点 = 每日实测，绿线 = 每 7 天均值，绿虚线 = 目标。斜率用最小二乘回归，**不用两点相减**。
+- **核心指标总览下方的「近 14 天趋势」**：12 张小图分三组，浅绿区 = 建议区间。区间型指标画误差棒（线 = 区间中位），**中位只用于看图，不当点值结论**。缺数不插值，折线在该日断开。
+
+⚠️ 图上判定与正文判定必须一致：钙按下界判、钠按上界判。改图不改正文（或反过来）就会出现「图说达标、文字说不足」的自相矛盾。
+
+### `record_sleep.py` —— 手动补录睡眠（设备漏记的备援）
+
+```bash
+"$PY" <PROJECT_ROOT>/scripts/record_sleep.py --date <YYYY-MM-DD> --total-min <分钟> --start "23:30" --end "07:00"
+```
+
+设备正常同步时**不需要**用这个，仅作补漏。
+
+### `db_status.py` —— 数据巡检与清理
+
+```bash
+"$PY" <PROJECT_ROOT>/scripts/db_status.py                  # 各表行数、来源分布、时间覆盖
+"$PY" <PROJECT_ROOT>/scripts/db_status.py --purge-demo     # 清演示数据
+"$PY" <PROJECT_ROOT>/scripts/db_status.py --purge-date <YYYY-MM-DD>
+"$PY" <PROJECT_ROOT>/scripts/db_status.py --purge-library  # 清空份量库
+```
+
+### `init_db.py` —— 建库 / 升级 schema（幂等）
+
+```bash
+"$PY" <PROJECT_ROOT>/scripts/init_db.py            # 缺列自动补，不必重建库
+"$PY" <PROJECT_ROOT>/scripts/init_db.py --status   # 看库状态
+```
+
+### `audit_entries.py` —— 漏记巡检（「发了但没录」）
+
+```bash
+"$PY" <PROJECT_ROOT>/scripts/audit_entries.py                    # 巡检昨天（退出码 2 = 有漏记候选）
+"$PY" <PROJECT_ROOT>/scripts/audit_entries.py --date <YYYY-MM-DD>   # 指定某天
+"$PY" <PROJECT_ROOT>/scripts/audit_entries.py --days 3            # 最近 3 天
+"$PY" <PROJECT_ROOT>/scripts/audit_entries.py --json              # 结果存 logs/audit-<date>.json
+"$PY" <PROJECT_ROOT>/scripts/audit_entries.py --dismiss <blob_id> # 这张不用记，以后别提示
+"$PY" <PROJECT_ROOT>/scripts/audit_entries.py --dismiss-date <YYYY-MM-DD>
+"$PY" <PROJECT_ROOT>/scripts/audit_entries.py --list-ignored      # 看已忽略清单
+```
+
+**它查什么**：不查文件系统（照片本来就不落盘），而是查 **WorkBuddy 自己的附件台账**
+（会话记录 `~/.workbuddy/projects/*/*.jsonl` 里每条带图消息的 `image_blob_ref`），
+再减去 `data/intake_log.jsonl`（已录）与 `data/audit_ignored.jsonl`（已忽略）→ 差额就是漏记候选。
+
+**候选怎么处置**：
+- 是要记的 → 直接 `Read` 候选给出的 `blob_path`（图还在本机），识读后补录，**记得带 `--blob-id`**；
+- 不用记 → `--dismiss <blob_id>` 或 `--dismiss-date <日期>`。
+
+**噪音规则**：文件名命中 `config.audit.ignore_name_patterns`（默认 `Clipboard_Screenshot*` / `Screen*` 等）
+的图视为「例行非健康数据」，只报一行计数、不列入候选。不要因此把候选当成"完整清单"——必要时加
+`--include-screenshots` 看全量。
+
+**覆盖边界（要能如实说）**：如果消息压根没进到会话记录里（比如主机没开时手机端发的），
+附件台账里不会有痕迹，**这一步查不出来**。这种情况如实说明"查不到"，别假装覆盖了。
+
+## 三、数据表速查
 
 | 表 | 存什么 | 谁写 |
 |---|---|---|
-| `activity_daily` | 日均步数、距离、活动热量、站立小时 | 手环组件 |
-| `heart_rate` | 心率样本 | 手环组件 |
-| `sleep_session` | 睡眠分期、时长、评分 | 手环组件 |
-| `spo2` / `stress` | 血氧 / 压力样本 | 手环组件 |
-| `workout` | 运动记录 | 手环组件 |
-| `body_metric` | 体重 / BMI / 体脂 / 肌肉量（每日一行） | `record_body.py` 或体脂秤 |
+| `activity_daily` | 日均步数、距离、活动热量、站立小时 | 手环 MCP |
+| `heart_rate` | 心率样本（`ts`, `bpm`, `hr_type`） | 手环 MCP |
+| `sleep_session` | 睡眠分期（深/浅/REM/清醒）、时长、评分 | 手环 MCP |
+| `spo2` / `stress` | 血氧 / 压力样本 | 手环 MCP |
+| `workout` | 运动记录 | 手环 MCP |
+| `body_metric` | 体重 / BMI / 体脂 / 肌肉量（**每日一行**） | `record_body.py` 或体脂秤 |
 | `waist` | 腰围（周频） | `record_body.py` |
-| `meal` | 每餐（区间热量、蛋白、蔬菜拳数、碳水档位、置信度） | `record_meal.py` |
+| `meal` | 每餐（区间热量、蛋白、蔬菜拳数、碳水档位、置信度、**发酵份数**、**钠区间**） | `record_meal.py` |
 | `portion_library` | 个人份量库（越用越准） | `record_meal.py` |
-| `daily_review` | 每日主观反馈 | 手动 / 报告流程 |
+| `daily_review` | 每日主观反馈（精力、饥饿感、建议执行情况） | 手动 / 报告流程 |
 | 视图 `v_body_trend` | 体重 + BMI + 体脂 + 腰围联合视图 | — |
 
-**旁路台账**（JSONL，不是数据源）：
+**旁路台账**（不是数据源，是 JSONL）：
 
-| 文件 | 存什么 |
-|---|---|
-| `data/intake_log.jsonl` | 每条录入来自哪张图 |
-| `data/audit_ignored.jsonl` | 已忽略的漏记候选 |
-| `data/advice_log.jsonl` | 每份报告给的建议 + 目标日（T+1 执行率核验） |
+| 文件 | 存什么 | 谁写 |
+|---|---|---|
+| `data/intake_log.jsonl` | 每条录入来自哪张图（`blob_id` / `date` / `kind` / `summary`） | 录入脚本自动写 |
+| `data/audit_ignored.jsonl` | 已忽略的漏记候选 | `audit_entries.py --dismiss*` |
+| `data/advice_log.jsonl` | 每份报告给出的建议 + 目标日（次日），用于 T+1 执行率核验 | `build_report.py` 自动写 |
 
-`source` 枚举：`photo` / `manual` / `scale_mcp` / `mi_fitness` / `demo`。
+**source 字段枚举**：`photo` / `manual` / `scale_mcp` / `mi_fitness` / `demo`。
 
----
+## 四、口径与纪律（易错点）
 
-## 九、口径与纪律
+1. **单位**：按 `config.yaml` 的 `weight_unit` 解读用户报数（默认「斤」）。把原值传给脚本，**不要自己先换算**——脚本负责。临时用 kg 时加 `--unit kg`。
+2. **营养只写区间**。绝不输出点值，绝不把"估算"说成"测量"。
+3. **照片只用于取数，取完即删**。不复制、不转发、不留档。
+4. **不录膳食纤维**——照片判不出来。用蔬菜拳数代替。
+5. **数据不足就说不足**，不要用估算填满报告。
+6. **异常心率 / 血氧不解读**，只标记 + 建议就医。
+7. **睡眠口径**：报告日 D 展示「D 夜 → D+1 晨」那一觉（早上看就是"昨夜"），库内归属日 = 起床日。
+8. **判趋势不判单日**：体重与缺口都看 7 日/多日均值，单日波动多半是噪声。
+9. **进食窗口是可选功能（默认关闭），不是给所有人的建议**。给用户开窗口前必须先做安全筛查（见 `references/safety-boundary.md`）。
 
-### 硬红线（不因任何理由突破）
-
-- **不下疾病诊断**，不给药物 / 补剂建议，不给极端饮食方案。
-- **不解读异常心率、血氧、血压数值**。发现异常只做一件事：**标记 + 建议就医**，不做任何分析或推断。
-- 所有建议限定在**生活方式层面**：作息、饮食结构、运动量、体重趋势、腰围。
-- 你不是医疗设备。涉及症状、用药、疾病，一律建议找医生。
-- **进食窗口只是本工具作者的个人纪律，不是给用户的建议**。开窗口前必须先过 `references/safety-boundary.md` 的筛查表：低血糖 / 糖尿病 / 进食障碍史 / 孕期哺乳期一律不建议开。
-
-### 易错点
-
-1. **单位**：按 `config.yaml` 的 `weight_unit` 解读用户报数（默认「斤」）。把**原值**传给脚本，**不要自己先换算**——脚本负责。用户用 kg 报数时加 `--unit kg`。
-2. **营养只写区间**。绝不输出点值，绝不把「估算」说成「测量」。
-3. **照片只用于取数**，不复制、不转发、不留档。宿主自身可能留副本（如 WorkBuddy 的 blob 缓存），那是宿主行为，**不要去删**——它正是漏记补录的窗口。
-4. **不录膳食纤维**——照片判不出来，用蔬菜拳数代替。
-5. **数据不足就说不足**，不要用估算填满报告。宁可报告短，不可报告假。
-6. **睡眠口径**：报告日 D 展示「D 夜 → D+1 晨」那一觉（早上看就是「昨夜」），库内归属日 = 起床日。
-7. **判趋势不判单日**：体重与缺口都看 7 日/多日均值，单日波动多半是噪声。
-8. **不断言设备来源**：手环源库丢弃了设备标识，分不出某天步数是手机还是手环记的。统一说「活动数据」，**不要说「手环记录」**。
-9. **不修改用户没让改的东西**。改 schema、改配置这类结构性动作，先说清楚再动。
-10. **测量条件必须稳定**（晨起、排尿后、空腹、同一时间、同一台秤）。条件不稳时记进备注，否则趋势不可比。
-
-隐私纪律详见 `references/privacy.md`。
-
-### 已知限制（要能如实说）
-
-- **项目根固定 `~/health-data`**：`record_*.py` 的 `--root` 参数在 1.4.0 里会被模块导入时吞掉，非默认路径请改用环境变量 `HEALTH_ROOT`，否则脚本会静默回落到 `~/health-data`。
-- **非 WorkBuddy 宿主上的漏记巡检不可信**，见第七节。
-- **小米接入是第三方逆向项目**（mi-fitness-mcp-cn，MIT，非小米官方），接口可能因小米改版失效。失效时如实说，不装作没事。
-
----
-
-## 十、故障排查
+## 五、故障排查
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | `no such column: xxx` | 库里缺列 | 跑 `init_db.py`（幂等补列） |
-| 体重被拒写 | 换算后 ≥100 kg，疑似把斤当 kg | 确认单位；是斤就直接传斤数 |
-| 脚本报「找不到配置文件」 | 没建项目，或工作目录漂移 | 先跑 `bootstrap.py`；显式设 `HEALTH_ROOT` |
-| 数据写进了 `~/health-data` 而不是用户的目录 | `--root` 被吞（已知限制） | 改用 `HEALTH_ROOT` 环境变量，别传 `--root` |
-| 中文输出乱码 | 控制台编码 | 脚本已内置 UTF-8 重设；仍乱码则 `chcp 65001` |
-| 报告某板块空 | 该数据源当期无数据 | 正常。如实说「数据不足」，勿造数 |
-| **手环板块全空** | 忘了跑 `sync_band.py`，或没配对 | 先配对，再 `sync_band.py`，最后出报告。**最常见** |
-| `sync_band` 报「云端拉取失败」 | 网络 / 凭据过期 | 脚本会用源库数据继续；如实说明「本次未能联网拉取」 |
-| 手环数据为 0（搬运过仍为 0） | 云端还没有数据（未戴 / 未同步） | 不是接口问题，等源头产生数据 |
-| 某天步数异常大 | 手机与手环同一天各自上报被累加 | 脚本打 ⚠️ 时如实转述，别静默接受 |
-| 巡检说「没有漏记」但用户确信发过图 | 非 WorkBuddy 宿主无附件台账 | 见第七节，不得据此向用户打包票 |
+| 体重被拒写 | 值 ≥100 kg，疑似斤 | 确认单位；是斤就直接传斤数（脚本默认按斤） |
+| 脚本报「找不到配置文件」 | 没建项目或工作目录不对 | `--root <PROJECT_ROOT>`，或先跑第零节的初始化 |
+| 脚本中文输出乱码 | 控制台编码 | 脚本已内置 UTF-8 重设；若仍乱码，检查终端 `chcp 65001` |
+| 报告某个板块空 | 该数据源当期无数据 | 正常。如实呈现"数据不足"，勿造数 |
+| **手环板块全空** | 忘了跑 `sync_band.py`（MCP 的数据躺在源库，没进主库）或没配对 MCP | 先配对，再跑 `sync_band.py`，最后出报告。**这是最常见的原因** |
+| `sync_band` 报「云端拉取失败」 | 网络 / 凭据过期 | 脚本会继续用源库数据；如实说明"本次未能联网拉取" |
+| 手环数据为 0（跑过搬运仍为 0） | 云端还没有数据（未戴 / 未同步） | 不是接口问题。等源头产生数据 |
+| 某天步数异常大 | 手机与手环同一天各自上报被累加 | `sync_band.py` 打 ⚠️ 时会提示；如实转述，别静默接受 |
 
----
-
-## 十一、参考文档
+## 六、参考文档
 
 | 文档 | 内容 |
 |---|---|
-| `references/onboarding.md` | 首次引导话术（一页纸 + 常见问题答法） |
-| `references/scenes.md` | 场景 A–E 完整步骤（照着做，别凭印象） |
-| `references/commands.md` | 11 个脚本的完整参数与示例 |
-| `references/scheduling.md` | 定时任务：WorkBuddy 与豆包两套写法 + 提示词模板 |
-| `references/report-format.md` | 日报三层版式与判定口径（改报告前必读） |
+| `references/report-format.md` | 日报三层版式与判定口径（必读，改报告前看） |
 | `references/meal-advice-template.md` | **配餐建议输出模板**：五段固定顺序（结论→结果表→缺口表→依据→偏差）+ 六类速查 + 不合格写法对照 + 自检清单。写饮食建议前必读 |
 | `references/safety-boundary.md` | 做什么、不做什么（硬约束） |
 | `references/band-setup.md` | 小米手环 / 体脂秤接入步骤 |

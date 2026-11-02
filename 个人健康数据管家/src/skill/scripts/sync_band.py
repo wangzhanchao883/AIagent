@@ -23,7 +23,7 @@ sync_band.py —— 手环数据搬运：MCP 源库 → 主库 health.db
 设计约束（与 docs/04-决策记录.md 一致）：
   · 幂等——重复跑不产生重复行（全部 UPSERT / INSERT-OR-IGNORE）
   · 活动 / 睡眠 / 心率 / 血氧 / 压力 / 运动：源库没有的字段留 NULL，不用 0 或估算值填充
-  · **体重（body_metrics）**：源库的 body_measurements 视为**体脂秤**数据（2026-10-12 接入），
+  · **体重（body_metrics）**：源库的 body_measurements 视为**体脂秤**数据（首次接入时），
     按 D-21 方案 A + D-29 时间窗搬运——
       ① 只收**晨起窗（默认 05:00–11:00）内、当日首条**
       ② **先查后写，绝不覆盖**：该日期主库已有记录（照片 / 口述 / 秤）一律不动
@@ -58,15 +58,23 @@ def _resolve_health_root() -> Path:
         if _a == "--root" and _i + 1 < len(_argv):
             _v = _argv[_i + 1]
             del _argv[_i:_i + 2]
-            return Path(_v).expanduser().resolve()
+            _p = Path(_v).expanduser().resolve()
+            # 写回环境变量：本脚本会 import 别的脚本（如 _intake_log），
+            # 它们也带同一个解析器；不写回的话 --root 会被第一个消费者吃掉，
+            # 后面那个静默回落到 ~/health-data。
+            _os.environ["HEALTH_ROOT"] = str(_p)
+            return _p
         if _a.startswith("--root="):
             _v = _a.split("=", 1)[1]
             del _argv[_i]
-            return Path(_v).expanduser().resolve()
+            _p = Path(_v).expanduser().resolve()
+            _os.environ["HEALTH_ROOT"] = str(_p)
+            return _p
     _env = _os.environ.get("HEALTH_ROOT")
     if _env:
         return Path(_env).expanduser().resolve()
     return (Path.home() / "health-data").resolve()
+
 
 ROOT = _resolve_health_root()
 DB = ROOT / "data" / "health.db"
@@ -77,6 +85,8 @@ VENDOR = ROOT / "vendor" / "mi-fitness-mcp-cn"
 MCP_EXE = VENDOR / ".venv" / "Scripts" / "mi-fitness-mcp.exe"
 MCP_EXE_POSIX = VENDOR / ".venv" / "bin" / "mi-fitness-mcp"
 
+# [market] 按当前用户家目录推导（Windows 默认位置）；macOS / Linux 请在 config 的
+# sources.band.source_db 里填 `mi-fitness-mcp doctor` 显示的真实路径
 DEFAULT_SRC_DB = (
     Path.home() / "AppData" / "Local" / "mi-fitness-mcp" / "mi-fitness-mcp" / "mi_fitness.db"
 )
@@ -91,7 +101,7 @@ PULL_TYPES = [
     "spo2",
     "stress",
     "workouts",
-    "body_measurements",   # 体脂秤（2026-10-12 接入）
+    "body_measurements",   # 体脂秤（首次接入时）
 ]
 
 # 合理性红线：超过这个量级多半是「同一天多个设备各自上报被累加」，打标提示而非静默接受

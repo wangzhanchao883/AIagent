@@ -3,7 +3,7 @@
 `<SKILL_DIR>` = 本 skill 目录；`<PROJECT_ROOT>` = 项目根（默认 `~/health-data`）。
 `$PY` 按 `SKILL.md` 第四节探测。**所有脚本都能从任意目录用绝对路径调用，不要 `cd` 进去。**
 
-> 关于 `--root`：`record_*.py` 的 `--root` 在 1.4.0 里会被模块导入吞掉（已知限制）。**要指定非默认项目根，用环境变量 `HEALTH_ROOT`，不要传 `--root`。**
+> 关于 `--root`：1.6.0 起可以直接传 `--root <路径>`（此前会被模块导入吞掉，已修）。传 `--root` 与设 `HEALTH_ROOT` 环境变量等效，两者都给时以 `--root` 为准。
 
 ---
 
@@ -11,7 +11,7 @@
 
 ```bash
 "$PY" <SKILL_DIR>/scripts/bootstrap.py --root ~/health-data \
-  --height 171 --age 40 --unit jin --target-weight 130 --no-input
+  --height 175 --age 35 --unit kg --target-weight 68 --no-input
 ```
 
 | 参数 | 说明 |
@@ -20,7 +20,7 @@
 | `--height` | 身高 cm（**必填**，算 BMR 用） |
 | `--age` | 年龄（**必填**） |
 | `--sex` | `male` / `female`，影响 BMR 系数 |
-| `--unit` | `kg` 或 `jin`（体重单位，默认 `jin`） |
+| `--unit` | `kg` 或 `jin`（体重单位，默认 `kg`） |
 | `--target-weight` | 目标体重，单位同 `--unit` |
 | `--fist-width` | 拳宽 cm，照片估份量用（可选） |
 | `--name` | 用户称呼（可选） |
@@ -46,7 +46,7 @@
 ## record_body.py —— 体重 / 体脂 / 腰围
 
 ```bash
-# 基本录入（单位按 config，默认斤）
+# 基本录入（单位按 config，默认 kg；报斤就加 --unit jin）
 "$PY" <PROJECT_ROOT>/scripts/record_body.py --weight 145.2
 
 # 带附件指纹（宿主提供了才传）
@@ -96,6 +96,12 @@
   --kcal-low 500 --kcal-high 700 --save-to-library
 "$PY" <PROJECT_ROOT>/scripts/record_meal.py --meal-type lunch --desc "青椒炒肉" --from-library "食堂青椒炒肉"
 
+# 发酵食物与钠（1.6.0 新增）—— 份数按 references 里的计数口径折算
+"$PY" <PROJECT_ROOT>/scripts/record_meal.py --meal-type breakfast --desc "无糖酸奶 150g + 水煮蛋两个" \
+  --kcal-low 260 --kcal-high 320 --protein-low 16 --protein-high 20 \
+  --calcium-low 180 --calcium-high 240 --ferment 1 --ferment-desc "无糖酸奶 150g" \
+  --sodium-low 120 --sodium-high 200
+
 # 查看
 "$PY" <PROJECT_ROOT>/scripts/record_meal.py --show
 "$PY" <PROJECT_ROOT>/scripts/record_meal.py --day 2026-10-26
@@ -110,6 +116,9 @@
 | `--protein-low` / `--protein-high` / `--protein` | 蛋白克数 |
 | `--calcium-low` / `--calcium-high` | 钙 mg（可选，照片通常判不出，宁缺勿造） |
 | `--veg` | 蔬菜拳数（取代膳食纤维） |
+| `--ferment` | 发酵食物份数（1.6.0 新增；只计含活菌且未再加热的） |
+| `--ferment-desc` | 这 1 份是什么（如「无糖酸奶 200g」），便于人眼核对 |
+| `--sodium-low` / `--sodium-high` | 钠 mg 区间（1.6.0 新增；历史行不回填） |
 | `--carb` | 碳水档位 `low` / `mid` / `high` |
 | `--confidence` | `high` / `mid` / `low`（外食强制 `low`） |
 | `--place` | `家` / `外食` / 具体店名 |
@@ -200,12 +209,14 @@
 
 | 参数 | 说明 |
 |---|---|
-| `--date` | 报告日，默认昨天 |
+| `--date` | 报告日 `YYYY-MM-DD`，默认取库中最新一天 |
 | `--no-sleep` | 不查睡眠（**22:00 当日速览必须加**，当天还没睡完） |
 | `--sleep` | 强制含睡眠 |
 | `--open` | 生成后用系统默认浏览器打开 |
 
 版式见 `references/report-format.md`。
+
+> 1.6.0 起报告含两类图：**体重总趋势**（周平均，在一句话总结里）与**近 14 天趋势**（12 张小图）。图上缺数是**断开**不是补零；区间型指标的线是当日区间**中位**，判定仍按保守端（钙看下界、钠看上界）。复述时不要拿单日读数当结论。
 
 ---
 
